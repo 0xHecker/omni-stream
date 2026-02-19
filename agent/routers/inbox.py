@@ -145,10 +145,16 @@ async def upload_chunk(
 ) -> dict:
     config = load_config()
     verify_transfer_ticket(ticket, transfer_id, share_id)
-
-    payload = await request.body()
-    if len(payload) > config.upload_chunk_max_bytes:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Chunk too large")
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            content_length_value = int(content_length)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid content-length header") from exc
+        if content_length_value < 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid content-length header")
+        if content_length_value > config.upload_chunk_max_bytes:
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Chunk too large")
 
     offset_header = request.headers.get("x-chunk-offset", "0")
     try:
@@ -217,11 +223,38 @@ async def upload_chunk(
         )
 
     mode = "r+b" if part_path.exists() else "wb"
+    remaining_expected = record.expected_size - offset
+    if remaining_expected < 0:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Chunk offset exceeds expected size")
     with part_path.open(mode) as file_obj:
         file_obj.seek(offset)
-        file_obj.write(payload)
+        written = 0
+        try:
+            async for payload_chunk in request.stream():
+                if not payload_chunk:
+                    continue
+                written += len(payload_chunk)
+                if written > config.upload_chunk_max_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail="Chunk too large",
+                    )
+                if written > remaining_expected:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Chunk exceeds expected item size",
+                    )
+                file_obj.write(payload_chunk)
+        except HTTPException:
+            file_obj.truncate(offset)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            file_obj.truncate(offset)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to read chunk payload") from exc
 
-    record.received_size = offset + len(payload)
+    record.received_size = offset + written
+    if is_last_chunk and record.received_size != record.expected_size:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Final chunk does not match expected size")
     record.state = "staged" if is_last_chunk else "receiving"
     db.commit()
     notify_transfer_item_state(config, transfer_id, record.item_id, record.state)

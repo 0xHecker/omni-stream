@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import os
 import subprocess
 import sys
@@ -15,20 +14,29 @@ def main() -> int:
         print(f"Spec file not found: {spec_path}")
         return 1
 
-    if importlib.util.find_spec("PyInstaller") is not None:
-        cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", str(spec_path)]
+    pyinstaller_version = os.environ.get("PYINSTALLER_VERSION", "6.19.0").strip()
+    pyinstaller_requirement = f"pyinstaller=={pyinstaller_version}" if pyinstaller_version else "pyinstaller"
+
+    uv_executable = os.environ.get("UV") or shutil.which("uv")
+    if uv_executable:
+        # Build inside the project environment so application dependencies are bundled.
+        cmd = [
+            uv_executable,
+            "run",
+            "--with",
+            pyinstaller_requirement,
+            "pyinstaller",
+            "--noconfirm",
+            "--clean",
+            str(spec_path),
+        ]
     else:
-        uv_executable = os.environ.get("UV") or shutil.which("uv")
-        if uv_executable:
-            # Build inside the project environment so application dependencies are bundled.
-            cmd = [uv_executable, "run", "--with", "pyinstaller", "pyinstaller", "--noconfirm", "--clean", str(spec_path)]
-        else:
-            install_cmd = [sys.executable, "-m", "pip", "install", "pyinstaller"]
-            print("Running:", " ".join(install_cmd))
-            installed = subprocess.run(install_cmd, cwd=repo_root, check=False)
-            if int(installed.returncode) != 0:
-                return int(installed.returncode)
-            cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", str(spec_path)]
+        install_cmd = [sys.executable, "-m", "pip", "install", pyinstaller_requirement]
+        print("Running:", " ".join(install_cmd))
+        installed = subprocess.run(install_cmd, cwd=repo_root, check=False)
+        if int(installed.returncode) != 0:
+            return int(installed.returncode)
+        cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", str(spec_path)]
 
     print("Running:", " ".join(cmd))
     completed = subprocess.run(cmd, cwd=repo_root, check=False)

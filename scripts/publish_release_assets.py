@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -49,6 +50,45 @@ def _api_request(
     except urllib.error.HTTPError as exc:
         body = exc.read()
         return int(exc.code), body
+
+
+def _api_upload_file(url: str, token: str, path: Path) -> tuple[int, bytes]:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"https", "http"}:
+        raise RuntimeError(f"Unsupported upload URL scheme: {parsed.scheme}")
+    if not parsed.netloc:
+        raise RuntimeError("Upload URL is missing host")
+
+    request_path = parsed.path or "/"
+    if parsed.query:
+        request_path = f"{request_path}?{parsed.query}"
+
+    connection_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    connection = connection_cls(parsed.netloc, timeout=300)
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "stream-local-release-script",
+        "Content-Type": "application/octet-stream",
+        "Content-Length": str(path.stat().st_size),
+    }
+
+    try:
+        connection.putrequest("POST", request_path)
+        for name, value in headers.items():
+            connection.putheader(name, value)
+        connection.endheaders()
+
+        with path.open("rb") as file_obj:
+            for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+                connection.send(chunk)
+
+        response = connection.getresponse()
+        body = response.read()
+        return int(response.status), body
+    finally:
+        connection.close()
 
 
 def _decode_json(body: bytes) -> dict:
@@ -129,7 +169,7 @@ def _upload_assets(repo: str, token: str, release: dict, files: list[Path]) -> N
         filename = path.name
         _delete_asset_if_exists(repo, token, release, filename)
         upload_url = f"{upload_base}?name={urllib.parse.quote(filename, safe='')}"
-        status, body = _api_request("POST", upload_url, token, binary=path.read_bytes())
+        status, body = _api_upload_file(upload_url, token, path)
         if status not in {200, 201}:
             detail = body.decode("utf-8", errors="ignore")
             raise RuntimeError(f"Failed to upload asset {filename}: HTTP {status} {detail}")

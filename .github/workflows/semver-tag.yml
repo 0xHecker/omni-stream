@@ -19,7 +19,6 @@ on:
         type: string
   push:
     branches:
-      - main
       - master
 
 concurrency:
@@ -31,7 +30,10 @@ permissions:
 
 jobs:
   bump-and-tag:
-    if: github.event_name == 'workflow_dispatch' || (github.actor != 'github-actions[bot]' && !startsWith(github.event.head_commit.message, 'chore(release): v'))
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.actor != 'github-actions[bot]' &&
+      !startsWith(github.event.head_commit.message, 'chore(release): v'))
     runs-on: ubuntu-latest
 
     steps:
@@ -41,7 +43,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          BRANCH="${GITHUB_REF_NAME}"
+          BRANCH="master"
           REPO_DIR="$(mktemp -d)"
           REPO_HOST="${GITHUB_SERVER_URL#https://}"
           REPO_URL="https://x-access-token:${GITHUB_TOKEN}@${REPO_HOST}/${GITHUB_REPOSITORY}.git"
@@ -71,6 +73,13 @@ jobs:
             echo "Python is not available on this runner."
             exit 1
           fi
+          "$PYTHON_BIN" - <<'PY'
+          import sys
+          required = (3, 11)
+          current = sys.version_info[:2]
+          if current < required:
+              raise SystemExit(f"Python {required[0]}.{required[1]}+ required, found {current[0]}.{current[1]}")
+          PY
           "$PYTHON_BIN" --version
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
 
@@ -91,18 +100,22 @@ jobs:
           echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Commit version change
+        id: commit
         shell: bash
         working-directory: ${{ env.REPO_DIR }}
         run: |
           set -euo pipefail
           TAG="v${{ steps.version.outputs.new_version }}"
+          echo "skip_tag=false" >> "$GITHUB_OUTPUT"
           if git diff --quiet -- pyproject.toml; then
             echo "No version change detected."
+            echo "skip_tag=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
             echo "Tag already exists: $TAG"
-            exit 1
+            echo "skip_tag=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -110,11 +123,12 @@ jobs:
           git commit -m "chore(release): $TAG"
 
       - name: Tag and push
+        if: steps.commit.outputs.skip_tag != 'true'
         shell: bash
         working-directory: ${{ env.REPO_DIR }}
         run: |
           set -euo pipefail
           TAG="v${{ steps.version.outputs.new_version }}"
           git tag "$TAG"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "HEAD:master"
           git push origin "$TAG"

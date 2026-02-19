@@ -1,4 +1,4 @@
 # Dependencies are managed with uv.
-# Use: py -m uv sync
+# Use: py -m uv sync --frozen
 # Optional export for external tooling:
 #   py -m uv export --format requirements-txt --output-file requirements.txt

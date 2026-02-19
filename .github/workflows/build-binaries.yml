@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+env:
+  UV_VERSION: "0.10.4"
+  PYINSTALLER_VERSION: "6.19.0"
+
 jobs:
   build-and-package:
     runs-on: ${{ matrix.os }}
@@ -80,8 +84,15 @@ jobs:
             echo "Python is not available on this runner."
             exit 1
           fi
+          "$PYTHON_BIN" - <<'PY'
+          import sys
+          required = (3, 11)
+          current = sys.version_info[:2]
+          if current < required:
+              raise SystemExit(f"Python {required[0]}.{required[1]}+ required, found {current[0]}.{current[1]}")
+          PY
           "$PYTHON_BIN" --version
-          "$PYTHON_BIN" -m pip install --upgrade pip uv
+          "$PYTHON_BIN" -m pip install --upgrade pip "uv==$UV_VERSION"
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
 
       - name: Resolve version
@@ -112,7 +123,7 @@ jobs:
         working-directory: ${{ env.REPO_DIR }}
         run: |
           set -euo pipefail
-          "$PYTHON_BIN" -m uv sync
+          "$PYTHON_BIN" -m uv sync --frozen
 
       - name: Build binary
         shell: bash
@@ -120,6 +131,13 @@ jobs:
         run: |
           set -euo pipefail
           "$PYTHON_BIN" -m uv run python scripts/build_binary.py
+
+      - name: Smoke test built binary
+        shell: bash
+        working-directory: ${{ env.REPO_DIR }}
+        run: |
+          set -euo pipefail
+          "$PYTHON_BIN" -m uv run python scripts/smoke_binary.py --runner-os "${{ runner.os }}"
 
       - name: Package binary
         shell: bash

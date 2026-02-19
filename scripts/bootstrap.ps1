@@ -5,23 +5,73 @@ param(
 $ErrorActionPreference = "Stop"
 $script:PythonCmd = $null
 $script:UsingManagedPython = $false
+$script:RequiredPythonMajor = 3
+$script:RequiredPythonMinor = 11
+$script:PinnedUvVersion = "0.10.4"
 
 function Test-CommandExists {
     param([Parameter(Mandatory = $true)][string]$Name)
     return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+function Get-PythonVersionTuple {
+    param([Parameter(Mandatory = $true)][hashtable]$PythonCmd)
+    $out = & $PythonCmd.Exe @(
+        $PythonCmd.PrefixArgs + @("-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+    ) 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return $null
+    }
+    $raw = [string]$out
+    if (-not $raw) {
+        return $null
+    }
+    $parts = $raw.Trim().Split(".")
+    if ($parts.Count -ne 2) {
+        return $null
+    }
+    try {
+        return @{
+            Major = [int]$parts[0]
+            Minor = [int]$parts[1]
+        }
+    } catch {
+        return $null
+    }
+}
+
+function Test-PythonMeetsRequirement {
+    param([Parameter(Mandatory = $true)][hashtable]$PythonCmd)
+    $version = Get-PythonVersionTuple -PythonCmd $PythonCmd
+    if (-not $version) {
+        return $false
+    }
+    if ($version.Major -gt $script:RequiredPythonMajor) {
+        return $true
+    }
+    if ($version.Major -eq $script:RequiredPythonMajor -and $version.Minor -ge $script:RequiredPythonMinor) {
+        return $true
+    }
+    return $false
+}
+
 function Resolve-PythonCommand {
     if (Test-CommandExists -Name "py") {
-        return @{
+        $candidate = @{
             Exe = "py"
             PrefixArgs = @("-3")
         }
+        if (Test-PythonMeetsRequirement -PythonCmd $candidate) {
+            return $candidate
+        }
     }
     if (Test-CommandExists -Name "python") {
-        return @{
+        $candidate = @{
             Exe = "python"
             PrefixArgs = @()
+        }
+        if (Test-PythonMeetsRequirement -PythonCmd $candidate) {
+            return $candidate
         }
     }
     return $null
@@ -65,13 +115,15 @@ function Ensure-Uv {
     }
 
     if (-not $installed -and (Test-CommandExists -Name "choco")) {
-        choco install uv --yes
+        choco install uv --yes --version "$script:PinnedUvVersion"
         $installed = $true
     }
 
     if (-not $installed -and $script:PythonCmd) {
         & $script:PythonCmd.Exe @($script:PythonCmd.PrefixArgs + @("-m", "pip", "install", "--upgrade", "pip"))
-        & $script:PythonCmd.Exe @($script:PythonCmd.PrefixArgs + @("-m", "pip", "install", "--user", "--upgrade", "uv"))
+        & $script:PythonCmd.Exe @(
+            $script:PythonCmd.PrefixArgs + @("-m", "pip", "install", "--user", "--upgrade", "uv==$script:PinnedUvVersion")
+        )
     }
 
     if (Test-CommandExists -Name "uv") {
@@ -119,10 +171,10 @@ function Ensure-Python {
 
 function Sync-Dependencies {
     if ($script:UsingManagedPython) {
-        Invoke-Uv -Args @("sync", "--python", "3.11")
+        Invoke-Uv -Args @("sync", "--frozen", "--python", "3.11")
         return
     }
-    Invoke-Uv -Args @("sync")
+    Invoke-Uv -Args @("sync", "--frozen")
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -143,8 +195,8 @@ if (-not $NoSync) {
 Write-Host "Bootstrap complete."
 if ($NoSync) {
     if ($script:UsingManagedPython) {
-        Write-Host "Run 'uv sync --python 3.11' when you are ready."
+        Write-Host "Run 'uv sync --frozen --python 3.11' when you are ready."
     } else {
-        Write-Host "Run 'uv sync' (or 'py -3 -m uv sync') when you are ready."
+        Write-Host "Run 'uv sync --frozen' (or 'py -3 -m uv sync --frozen') when you are ready."
     }
 }

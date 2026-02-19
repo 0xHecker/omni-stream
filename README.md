@@ -50,7 +50,7 @@ No manual environment variables are required for this flow.
 
 Local build (current OS only):
 
-1. `uv sync`
+1. `uv sync --frozen`
 2. `uv run python scripts/build_binary.py`
 3. Output: `dist/stream-local` (or `dist/stream-local.exe` on Windows)
 
@@ -59,6 +59,8 @@ CI multi-OS build:
 - GitHub Actions workflow: `.github/workflows/build-binaries.yml`
 - Runs on every commit push (all branches/tags) and on manual dispatch.
 - Builds and packages native binaries for Windows, macOS, and Linux.
+- Uses pinned tool versions and lockfile sync for reproducible builds.
+- Smoke-tests the built binary before packaging.
 - On `v*` tags, automatically publishes a GitHub Release with package files attached.
 - Uses shell-only steps (no external marketplace `uses:` actions), which fits orgs that only allow owner-scoped actions.
 
@@ -74,7 +76,7 @@ Semantic versioning is controlled by `pyproject.toml` `version`.
 
 - GitHub automated bump + tag:
   - Workflow: `.github/workflows/semver-tag.yml`
-  - Runs automatically on every push to `master`/`main` (`patch` bump).
+  - Runs automatically on every push to `master` (`patch` bump).
   - Can also be run manually from Actions tab with custom bump type.
   - It updates `pyproject.toml`, commits, creates `vX.Y.Z` tag, and pushes.
   - Tag push triggers `.github/workflows/build-binaries.yml` to build packages and publish release assets.
@@ -104,6 +106,7 @@ Semantic versioning is controlled by `pyproject.toml` `version`.
    - macOS/Linux: `bash scripts/bootstrap.sh`
    - If system Python is missing, bootstrap installs a uv-managed Python 3.11 runtime (sandboxed) and uses that.
    - Note: auto-install may require admin/sudo privileges and internet access.
+   - Bootstrap sync uses `uv sync --frozen` for reproducible installs.
 2. Copy env defaults:
    - `copy .env.example .env` (Windows)
    - `cp .env.example .env` (macOS/Linux)

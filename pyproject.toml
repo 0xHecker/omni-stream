@@ -5,17 +5,16 @@ description = "Distributed LAN file access with coordinator + device agents."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "flask>=3.0.0,<4.0.0",
-  "pillow>=10.0.0,<12.0.0",
-  "fastapi>=0.115.0,<1.0.0",
-  "uvicorn[standard]>=0.32.0,<1.0.0",
-  "sqlalchemy>=2.0.30,<3.0.0",
-  "alembic>=1.14.0,<2.0.0",
-  "httpx>=0.28.0,<1.0.0",
-  "argon2-cffi>=23.1.0,<26.0.0",
-  "python-multipart>=0.0.20,<1.0.0",
+  "flask==3.1.3",
+  "pillow==11.3.0",
+  "fastapi==0.129.0",
+  "uvicorn[standard]==0.41.0",
+  "sqlalchemy==2.0.46",
+  "alembic==1.18.4",
+  "httpx==0.28.1",
+  "argon2-cffi==25.1.0",
+  "python-multipart==0.0.22",
 ]
 
 [tool.uv]
 package = false
-
