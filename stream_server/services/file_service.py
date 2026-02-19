@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import heapq
 import mimetypes
 import os
 from functools import lru_cache
@@ -91,6 +92,8 @@ TEXT_EXTENSIONS = {
     ".readme",
     ".license",
 }
+LIST_DEFAULT_MAX_ENTRIES = 400
+LIST_MAX_ENTRIES_CAP = 6000
 
 
 def get_file_type(filename: str | Path) -> str:
@@ -178,29 +181,71 @@ def _entry_to_item(root_dir: Path, entry_path: Path, is_directory: bool) -> dict
     }
 
 
-def list_directory(root_dir: Path, directory: Path) -> dict[str, Any]:
-    items: list[dict[str, Any]] = []
+def _normalize_list_limit(max_entries: int) -> int:
+    return max(1, min(int(max_entries), LIST_MAX_ENTRIES_CAP))
 
+
+def _iter_ranked_entries(root_dir: Path, directory: Path):
     with os.scandir(directory) as entries:
         for entry in entries:
+            try:
+                is_directory = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                continue
             entry_path = Path(entry.path)
-            is_directory = entry.is_dir(follow_symlinks=False)
             try:
                 item = _entry_to_item(root_dir, entry_path, is_directory)
             except ValueError:
                 # Skip symlinks or mount points that resolve outside the configured root.
                 continue
+            sort_key = (0 if is_directory else 1, entry.name.casefold(), entry.name)
+            yield sort_key, item
 
-            items.append(item)
 
-    items.sort(key=lambda item: (not item["is_dir"], item["name"].casefold()))
+def _compute_directory_listing(root_dir: Path, directory: Path, limit: int) -> tuple[str, str | None, bool, tuple[dict[str, Any], ...]]:
+    ranked_items = heapq.nsmallest(limit + 1, _iter_ranked_entries(root_dir, directory), key=lambda row: row[0])
+    truncated = len(ranked_items) > limit
+    if truncated:
+        ranked_items = ranked_items[:limit]
 
     current_path = to_client_path(directory, root_dir)
-    parent_path = None
-    if directory != root_dir:
-        parent_path = to_client_path(directory.parent, root_dir)
+    parent_path = None if directory == root_dir else to_client_path(directory.parent, root_dir)
+    items = tuple(item for _, item in ranked_items)
+    return current_path, parent_path, truncated, items
 
-    return {"current_path": current_path, "parent_path": parent_path, "items": items}
+
+@lru_cache(maxsize=64)
+def _cached_directory_listing(
+    root_dir_str: str,
+    directory_str: str,
+    directory_mtime_ns: int,
+    limit: int,
+) -> tuple[str, str | None, bool, tuple[dict[str, Any], ...]]:
+    del directory_mtime_ns
+    root_dir = Path(root_dir_str)
+    directory = Path(directory_str)
+    return _compute_directory_listing(root_dir, directory, limit)
+
+
+def list_directory(root_dir: Path, directory: Path, *, max_entries: int = LIST_DEFAULT_MAX_ENTRIES) -> dict[str, Any]:
+    limit = _normalize_list_limit(max_entries)
+    root_resolved = root_dir.resolve()
+    directory_resolved = directory.resolve()
+    directory_mtime_ns = directory_resolved.stat().st_mtime_ns
+    current_path, parent_path, truncated, cached_items = _cached_directory_listing(
+        str(root_resolved),
+        str(directory_resolved),
+        directory_mtime_ns,
+        limit,
+    )
+    items = [dict(item) for item in cached_items]
+    return {
+        "current_path": current_path,
+        "parent_path": parent_path,
+        "items": items,
+        "truncated": truncated,
+        "limit": limit,
+    }
 
 
 def search_entries(
@@ -270,15 +315,12 @@ def search_entries(
                 break
     else:
         with os.scandir(start_directory) as entries:
-            scanned: list[tuple[Path, bool]] = []
             for entry in entries:
                 try:
-                    scanned.append((Path(entry.path), entry.is_dir(follow_symlinks=False)))
+                    path_obj = Path(entry.path)
+                    is_directory = entry.is_dir(follow_symlinks=False)
                 except OSError:
                     continue
-
-            scanned.sort(key=lambda item: (not item[1], item[0].name.casefold()))
-            for path_obj, is_directory in scanned:
                 if match_and_add(path_obj, is_directory):
                     break
 

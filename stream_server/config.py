@@ -1,26 +1,19 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
+from .settings_store import resolve_runtime_settings
+
 BASE_DIR = Path(__file__).resolve().parent.parent
-
-
-def _resolve_root_dir() -> Path:
-    configured_root = os.environ.get("STREAM_ROOT_DIR")
-    if configured_root:
-        try:
-            root = Path(configured_root).expanduser().resolve()
-            if root.exists() and root.is_dir():
-                return root
-        except OSError:
-            pass
-
-    return Path.home().resolve()
+_runtime = resolve_runtime_settings()
 
 
 class AppConfig:
-    SECRET_KEY = os.environ.get("STREAM_SECRET_KEY", "replace-this-secret-key")
-    PIN = os.environ.get("STREAM_PIN", "123456")
-    ROOT_DIR = _resolve_root_dir()
+    SECRET_KEY = _runtime["secret_key"]
+    PIN = _runtime["pin"]
+    ROOT_DIR = _runtime["root_dir"]
+    PORT = _runtime["port"]
+    AUTO_OPEN_BROWSER = _runtime["auto_open_browser"]
+    SETUP_COMPLETE = _runtime["configured"]
+    SETTINGS_PATH = str(_runtime["settings_path"])
     THUMBNAIL_SIZE = (220, 220)

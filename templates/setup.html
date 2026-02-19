@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Setup | Local File Grid</title>
+  <link
+    rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&display=swap"
+  />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/setup.css') }}" />
+</head>
+
+<body>
+  <div class="ambient-shape shape-a" aria-hidden="true"></div>
+  <div class="ambient-shape shape-b" aria-hidden="true"></div>
+  <main class="setup-shell">
+    <form class="setup-card" method="POST">
+      <p class="eyebrow">Quick Setup</p>
+      <h2>{{ "Update Settings" if setup_complete else "First Run Setup" }}</h2>
+      <p class="hint">Set a folder and PIN once. The app saves these settings automatically.</p>
+
+      {% if error %}
+      <p class="error">{{ error }}</p>
+      {% endif %}
+      {% if message %}
+      <p class="success">{{ message }}</p>
+      {% endif %}
+
+      {% if require_current_pin %}
+      <label for="current-pin">Current PIN</label>
+      <input id="current-pin" name="current_pin" type="password" inputmode="numeric" required minlength="4" maxlength="12" placeholder="Enter current PIN">
+      {% endif %}
+
+      <label for="root-dir">Shared Folder</label>
+      <input id="root-dir" name="root_dir" type="text" required value="{{ root_dir_value }}" placeholder="C:\Users\You\Documents">
+
+      <div class="grid-two">
+        <div>
+          <label for="pin">Access PIN</label>
+          <input id="pin" name="pin" type="password" inputmode="numeric" required minlength="4" maxlength="12" placeholder="4-12 digits">
+        </div>
+        <div>
+          <label for="pin-confirm">Confirm PIN</label>
+          <input id="pin-confirm" name="pin_confirm" type="password" inputmode="numeric" required minlength="4" maxlength="12" placeholder="Repeat PIN">
+        </div>
+      </div>
+
+      <label class="checkbox">
+        <input type="checkbox" name="auto_open_browser" {% if auto_open_browser %}checked{% endif %}>
+        Open browser automatically when app starts
+      </label>
+
+      <button type="submit">{{ "Save Changes" if setup_complete else "Save and Continue" }}</button>
+      <p class="meta">Config file: <code>{{ settings_file }}</code></p>
+      {% if setup_complete %}
+      <p class="meta"><a href="{{ url_for('web.index') }}">Back to app</a></p>
+      {% endif %}
+    </form>
+  </main>
+</body>
+
+</html>

@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Network File Streamer</title>
+    <title>Local File Grid</title>
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
     />
     <link
       rel="stylesheet"
@@ -14,10 +14,15 @@
     />
   </head>
   <body>
+    <div class="ambient-shape shape-a" aria-hidden="true"></div>
+    <div class="ambient-shape shape-b" aria-hidden="true"></div>
+    <div class="ambient-shape shape-c" aria-hidden="true"></div>
+
     <header class="topbar">
       <div class="brand">
-        <h1>Network File Streamer</h1>
-        <p id="root-label">Root: {{ root_dir }}</p>
+        <p class="eyebrow">Local Network Access</p>
+        <h1>Local File Grid</h1>
+        <p id="root-label" class="root-note">Root: {{ root_dir }}</p>
       </div>
       <div class="actions">
         <button
@@ -28,35 +33,183 @@
         >
           Light
         </button>
+        <a class="logout-link" href="{{ url_for('web.setup') }}">Setup</a>
         <a class="logout-link" href="{{ url_for('web.logout') }}">Logout</a>
       </div>
     </header>
 
     <main class="container">
-      <nav aria-label="breadcrumb">
-        <ol id="breadcrumb" class="breadcrumb"></ol>
-      </nav>
-      <section class="search-panel" aria-label="Search files">
-        <input
-          id="search-input"
-          class="search-input"
-          type="search"
-          placeholder="Search files or folders..."
-          autocomplete="off"
-        />
-        <label class="search-option" for="search-recursive">
-          <input id="search-recursive" type="checkbox" checked />
-          Recursive
-        </label>
-        <button id="search-clear" class="search-clear hidden" type="button">Clear</button>
+      <section class="controls-card">
+        <nav aria-label="breadcrumb">
+          <ol id="breadcrumb" class="breadcrumb"></ol>
+        </nav>
+        <section class="search-panel" aria-label="Search files">
+          <div class="search-row">
+            <label class="sr-only" for="search-input">Search files or folders</label>
+            <input
+              id="search-input"
+              class="search-input"
+              type="search"
+              placeholder="Search files or folders..."
+              autocomplete="off"
+            />
+            <button id="search-clear" class="search-clear hidden" type="button">Clear</button>
+          </div>
+          <label class="search-option" for="search-recursive">
+            <input id="search-recursive" type="checkbox" checked />
+            Recursive
+          </label>
+        </section>
       </section>
+
       <section id="status" class="status hidden" aria-live="polite"></section>
+      <section id="empty-state" class="empty-state hidden" aria-live="polite">
+        <h2 class="empty-title">No files yet</h2>
+        <p class="empty-text">Try another folder or adjust your search.</p>
+      </section>
       <section id="file-list" class="file-list"></section>
+
+      <section class="network-shell" aria-label="Network controls">
+        <div class="network-head">
+          <h2 class="network-title">Network</h2>
+          <button id="network-refresh" class="network-refresh" type="button">Refresh</button>
+        </div>
+
+        <div class="network-grid">
+          <section class="network-card">
+            <h3>Session</h3>
+            <p class="network-note">Coordinator settings and device pairing.</p>
+            <div class="field">
+              <label for="coord-url">Coordinator URL</label>
+              <input id="coord-url" type="url" placeholder="http://192.168.1.50:7000" />
+            </div>
+            <div class="field-grid">
+              <div class="field">
+                <label for="principal-id">Principal ID</label>
+                <input id="principal-id" type="text" placeholder="Principal ID" />
+              </div>
+              <div class="field">
+                <label for="client-device-id">Client Device ID</label>
+                <input id="client-device-id" type="text" placeholder="Client Device ID" />
+              </div>
+            </div>
+            <div class="field">
+              <label for="device-secret">Device Secret</label>
+              <input id="device-secret" type="password" placeholder="Device secret" />
+            </div>
+            <div class="action-row">
+              <button id="coord-connect" type="button">Connect</button>
+              <button id="coord-save-settings" type="button">Save</button>
+              <button id="coord-clear-settings" type="button">Clear</button>
+            </div>
+            <div id="coord-session-status" class="network-status">Not connected</div>
+
+            <details class="compact-details">
+              <summary>Pairing</summary>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="pair-display-name">Display Name</label>
+                  <input id="pair-display-name" type="text" placeholder="Your name" />
+                </div>
+                <div class="field">
+                  <label for="pair-device-name">Device Name</label>
+                  <input id="pair-device-name" type="text" placeholder="Laptop / Phone" />
+                </div>
+              </div>
+              <div class="action-row">
+                <button id="pair-start" type="button">Start Pairing</button>
+                <button id="pair-confirm" type="button">Confirm Pairing</button>
+              </div>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="pair-pending-id">Pending Pairing ID</label>
+                  <input id="pair-pending-id" type="text" placeholder="Pending pairing ID" />
+                </div>
+                <div class="field">
+                  <label for="pair-code">Pairing Code</label>
+                  <input id="pair-code" type="text" placeholder="000000" />
+                </div>
+              </div>
+              <div id="pairing-status" class="network-status">No active pairing.</div>
+            </details>
+          </section>
+
+          <section class="network-card">
+            <h3>Devices</h3>
+            <p class="network-note">Online/offline discovery and visibility controls.</p>
+            <div id="device-list" class="list-stack"></div>
+          </section>
+
+          <section class="network-card">
+            <h3>Shares</h3>
+            <p class="network-note">Available share permissions for selected device.</p>
+            <div id="share-list" class="list-stack"></div>
+          </section>
+
+          <section class="network-card">
+            <h3>Remote Read</h3>
+            <p class="network-note">Browse files on selected device/share without transferring.</p>
+            <div class="field">
+              <label for="remote-path">Path</label>
+              <input id="remote-path" type="text" placeholder="folder/subfolder" />
+            </div>
+            <div class="field">
+              <label for="remote-search">Search (optional)</label>
+              <input id="remote-search" type="text" placeholder="filename" />
+            </div>
+            <div class="action-row">
+              <button id="remote-load" type="button">Open Path</button>
+              <button id="remote-run-search" type="button">Search</button>
+            </div>
+            <div id="remote-list" class="list-stack"></div>
+          </section>
+
+          <section class="network-card">
+            <h3>Send Files</h3>
+            <p class="network-note">Create a transfer request and stream upload in chunks.</p>
+            <div class="field-grid">
+              <div class="field">
+                <label for="send-device">Target Device</label>
+                <select id="send-device"></select>
+              </div>
+              <div class="field">
+                <label for="send-share">Target Share</label>
+                <select id="send-share"></select>
+              </div>
+            </div>
+            <div class="field">
+              <label for="send-files">Files</label>
+              <input id="send-files" type="file" multiple />
+            </div>
+            <div class="field">
+              <label for="send-destination">Destination Path (optional)</label>
+              <input id="send-destination" type="text" placeholder="folder/subfolder" />
+            </div>
+            <div class="action-row">
+              <button id="send-request" type="button">Create Request</button>
+            </div>
+            <div id="upload-jobs" class="list-stack"></div>
+          </section>
+        </div>
+
+        <section class="network-card transfer-card">
+          <div class="transfer-head">
+            <h3>Transfer Center</h3>
+            <div class="transfer-role-tabs" role="tablist" aria-label="Transfer role">
+              <button type="button" class="transfer-role active" data-role="all" role="tab" aria-selected="true" tabindex="0">All</button>
+              <button type="button" class="transfer-role" data-role="incoming" role="tab" aria-selected="false" tabindex="-1">Incoming</button>
+              <button type="button" class="transfer-role" data-role="outgoing" role="tab" aria-selected="false" tabindex="-1">Outgoing</button>
+            </div>
+          </div>
+          <div id="transfer-list" class="list-stack"></div>
+        </section>
+      </section>
     </main>
 
-    <div id="preview-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div id="preview-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="preview-modal-title">
       <div class="modal-content">
         <div class="modal-topbar">
+          <h2 id="preview-modal-title" class="sr-only">File preview</h2>
           <a id="download-file" class="download-btn hidden" href="#" download>Download</a>
           <button id="close-modal" class="close-btn" type="button" aria-label="Close">
             x

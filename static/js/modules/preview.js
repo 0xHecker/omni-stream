@@ -17,6 +17,10 @@ const SHEETJS_VERSION = "0.20.3";
 const SHEETJS_URL = `https://cdn.sheetjs.com/xlsx-${SHEETJS_VERSION}/package/dist/xlsx.full.min.js`;
 
 const MAX_TEXT_PREVIEW_CHARS = 1200000;
+const MAX_TEXT_PREVIEW_BYTES = 1500000;
+const MAX_BINARY_PREVIEW_BYTES = 32 * 1024 * 1024;
+const MAX_WORD_PREVIEW_BYTES = 24 * 1024 * 1024;
+const MAX_EXCEL_PREVIEW_BYTES = 24 * 1024 * 1024;
 const MAX_SHEET_ROWS = 500;
 const MAX_SHEET_COLS = 80;
 
@@ -32,6 +36,7 @@ export function createPreviewController({
     currentFilePath: "",
     previewToken: 0,
     markdownRenderer: null,
+    lastFocusedElement: null,
     touch: {
       startX: 0,
       startY: 0,
@@ -55,7 +60,7 @@ export function createPreviewController({
   };
 
   const scriptLoadCache = new Map();
-  const styleLoadCache = new Set();
+  const styleLoadCache = new Map();
   let pdfJsLibPromise = null;
 
   function isModalOpen() {
@@ -80,7 +85,15 @@ export function createPreviewController({
   }
 
   function showModal() {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && !modal.contains(active)) {
+      state.lastFocusedElement = active;
+    }
     modal.classList.remove("hidden");
+    const closeButton = modal.querySelector("#close-modal, .close-btn");
+    if (closeButton instanceof HTMLElement) {
+      closeButton.focus({ preventScroll: true });
+    }
   }
 
   function closePreview() {
@@ -90,6 +103,10 @@ export function createPreviewController({
     modalPreview.classList.remove("pdf-mode");
     modalPreview.replaceChildren();
     updateDownloadLink(null);
+    if (state.lastFocusedElement && state.lastFocusedElement.isConnected) {
+      state.lastFocusedElement.focus({ preventScroll: true });
+    }
+    state.lastFocusedElement = null;
   }
 
   function teardownModalResources() {
@@ -145,9 +162,41 @@ export function createPreviewController({
     }
   }
 
+  function getModalFocusableElements() {
+    return [...modal.querySelectorAll(
+      "a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
+    )].filter((node) => node instanceof HTMLElement && !node.classList.contains("hidden"));
+  }
+
   function handleKeyDown(event) {
     if (!isModalOpen()) {
       return false;
+    }
+
+    if (event.key === "Tab") {
+      const focusable = getModalFocusableElements();
+      if (!focusable.length) {
+        event.preventDefault();
+        return true;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (!focusable.includes(active)) {
+        event.preventDefault();
+        first.focus();
+        return true;
+      }
+      if (event.shiftKey && active === first) {
+        event.preventDefault();
+        last.focus();
+        return true;
+      }
+      if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+        return true;
+      }
     }
 
     if (event.key === "Escape") {
@@ -198,7 +247,11 @@ export function createPreviewController({
   }
 
   async function fetchTextForPreview(path, token) {
-    const response = await fetch(`/stream?path=${encodeURIComponent(path)}`);
+    const response = await fetch(`/stream?path=${encodeURIComponent(path)}`, {
+      headers: {
+        Range: `bytes=0-${MAX_TEXT_PREVIEW_BYTES - 1}`,
+      },
+    });
     if (token !== state.previewToken) {
       return null;
     }
@@ -210,20 +263,72 @@ export function createPreviewController({
       throw new Error("Failed to load file text");
     }
 
-    const text = await response.text();
-    if (token !== state.previewToken) {
-      return null;
+    const decoder = new TextDecoder("utf-8", { fatal: false });
+    const reader = response.body?.getReader();
+    let text = "";
+    let bytesRead = 0;
+    let truncated = false;
+
+    if (reader) {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        if (token !== state.previewToken) {
+          return null;
+        }
+        if (!value) {
+          continue;
+        }
+        let chunk = value;
+        if (bytesRead + chunk.byteLength > MAX_TEXT_PREVIEW_BYTES) {
+          chunk = chunk.subarray(0, MAX_TEXT_PREVIEW_BYTES - bytesRead);
+          truncated = true;
+        }
+        bytesRead += chunk.byteLength;
+        text += decoder.decode(chunk, { stream: true });
+        if (bytesRead >= MAX_TEXT_PREVIEW_BYTES) {
+          try {
+            await reader.cancel();
+          } catch {
+            // Ignore reader cancellation issues.
+          }
+          break;
+        }
+      }
+      text += decoder.decode();
+    } else {
+      const buffer = await response.arrayBuffer();
+      if (token !== state.previewToken) {
+        return null;
+      }
+      const sliced = buffer.byteLength > MAX_TEXT_PREVIEW_BYTES ? buffer.slice(0, MAX_TEXT_PREVIEW_BYTES) : buffer;
+      truncated = buffer.byteLength > MAX_TEXT_PREVIEW_BYTES;
+      text = decoder.decode(sliced);
+      bytesRead = sliced.byteLength;
     }
 
-    if (text.length <= MAX_TEXT_PREVIEW_CHARS) {
-      return { text, truncated: false, totalChars: text.length };
+    const contentRange = response.headers.get("content-range") || "";
+    const contentLength = Number(response.headers.get("content-length") || "0");
+    const totalFromRange = Number(contentRange.split("/")[1] || "0");
+    if (Number.isFinite(totalFromRange) && totalFromRange > 0 && bytesRead < totalFromRange) {
+      truncated = true;
+    }
+    if (!truncated && response.status === 206 && contentLength >= MAX_TEXT_PREVIEW_BYTES) {
+      truncated = true;
     }
 
-    return {
-      text: text.slice(0, MAX_TEXT_PREVIEW_CHARS),
-      truncated: true,
-      totalChars: text.length,
-    };
+    const totalChars = text.length;
+    if (totalChars > MAX_TEXT_PREVIEW_CHARS) {
+      return {
+        text: text.slice(0, MAX_TEXT_PREVIEW_CHARS),
+        truncated: true,
+        totalChars,
+      };
+    }
+
+    return { text, truncated, totalChars };
   }
 
   async function fetchBinaryForPreview(path, token) {
@@ -239,11 +344,75 @@ export function createPreviewController({
       throw new Error("Failed to load file");
     }
 
-    const arrayBuffer = await response.arrayBuffer();
-    if (token !== state.previewToken) {
-      return null;
+    const contentLength = Number(response.headers.get("content-length") || "0");
+    if (Number.isFinite(contentLength) && contentLength > MAX_BINARY_PREVIEW_BYTES) {
+      throw new Error(`File is too large for inline preview (${formatBytes(contentLength)}). Use Download.`);
     }
-    return arrayBuffer;
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      const arrayBuffer = await response.arrayBuffer();
+      if (token !== state.previewToken) {
+        return null;
+      }
+      if (arrayBuffer.byteLength > MAX_BINARY_PREVIEW_BYTES) {
+        throw new Error(`File is too large for inline preview (${formatBytes(arrayBuffer.byteLength)}). Use Download.`);
+      }
+      return arrayBuffer;
+    }
+
+    const chunks = [];
+    let totalBytes = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (token !== state.previewToken) {
+        try {
+          await reader.cancel();
+        } catch {
+          // Ignore cancellation issues.
+        }
+        return null;
+      }
+      if (!value || !value.byteLength) {
+        continue;
+      }
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_BINARY_PREVIEW_BYTES) {
+        try {
+          await reader.cancel();
+        } catch {
+          // Ignore cancellation issues.
+        }
+        throw new Error(`File is too large for inline preview (${formatBytes(totalBytes)}). Use Download.`);
+      }
+      chunks.push(value);
+    }
+
+    const merged = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return merged.buffer;
+  }
+
+  function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) {
+      return "0 B";
+    }
+    const units = ["B", "KB", "MB", "GB"];
+    let value = bytes;
+    let unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex += 1;
+    }
+    const digits = value >= 100 || unitIndex === 0 ? 0 : 1;
+    return `${value.toFixed(digits)} ${units[unitIndex]}`;
   }
 
   function createPreviewNote(message) {
@@ -257,30 +426,72 @@ export function createPreviewController({
     const wrapper = document.createElement("section");
     const tabBar = document.createElement("div");
     tabBar.className = "preview-tabs";
+    tabBar.setAttribute("role", "tablist");
     const panes = document.createElement("div");
     const buttons = new Map();
     const paneNodes = new Map();
+    const tabOrder = tabDefinitions.map((tab) => tab.id);
+    const tabGroupId = `preview-tabs-${Math.random().toString(36).slice(2, 9)}`;
 
     function activate(tabId) {
       for (const [id, button] of buttons.entries()) {
         button.classList.toggle("active", id === tabId);
+        button.setAttribute("aria-selected", String(id === tabId));
+        button.tabIndex = id === tabId ? 0 : -1;
       }
       for (const [id, pane] of paneNodes.entries()) {
         pane.classList.toggle("hidden", id !== tabId);
+        pane.hidden = id !== tabId;
       }
     }
 
-    for (const tab of tabDefinitions) {
+    for (let index = 0; index < tabDefinitions.length; index += 1) {
+      const tab = tabDefinitions[index];
+      const tabButtonId = `${tabGroupId}-tab-${index}`;
+      const tabPanelId = `${tabGroupId}-panel-${index}`;
       const button = document.createElement("button");
       button.type = "button";
       button.className = "preview-tab";
       button.textContent = tab.label;
+      button.id = tabButtonId;
+      button.setAttribute("role", "tab");
+      button.setAttribute("aria-controls", tabPanelId);
       button.addEventListener("click", () => activate(tab.id));
+      button.addEventListener("keydown", (event) => {
+        const key = event.key;
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(key)) {
+          return;
+        }
+        event.preventDefault();
+        const currentIndex = tabOrder.indexOf(tab.id);
+        if (currentIndex < 0) {
+          return;
+        }
+        let nextIndex = currentIndex;
+        if (key === "ArrowRight") {
+          nextIndex = (currentIndex + 1) % tabOrder.length;
+        } else if (key === "ArrowLeft") {
+          nextIndex = (currentIndex - 1 + tabOrder.length) % tabOrder.length;
+        } else if (key === "Home") {
+          nextIndex = 0;
+        } else if (key === "End") {
+          nextIndex = tabOrder.length - 1;
+        }
+        const nextId = tabOrder[nextIndex];
+        const nextButton = buttons.get(nextId);
+        if (nextButton) {
+          activate(nextId);
+          nextButton.focus();
+        }
+      });
       buttons.set(tab.id, button);
       tabBar.appendChild(button);
 
       const pane = document.createElement("section");
       pane.className = "preview-pane";
+      pane.id = tabPanelId;
+      pane.setAttribute("role", "tabpanel");
+      pane.setAttribute("aria-labelledby", tabButtonId);
       pane.appendChild(tab.content);
       paneNodes.set(tab.id, pane);
       panes.appendChild(pane);
@@ -320,23 +531,40 @@ export function createPreviewController({
         }
         resolve(globalName ? window[globalName] : true);
       };
-      script.onerror = () => reject(new Error(`Failed to load script: ${url}`));
+      script.onerror = () => {
+        script.remove();
+        reject(new Error(`Failed to load script: ${url}`));
+      };
       document.head.appendChild(script);
     });
 
     scriptLoadCache.set(url, promise);
+    promise.catch(() => {
+      scriptLoadCache.delete(url);
+    });
     return promise;
   }
 
   async function loadExternalStyle(url) {
     if (styleLoadCache.has(url)) {
-      return;
+      return styleLoadCache.get(url);
     }
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = url;
-    document.head.appendChild(link);
-    styleLoadCache.add(url);
+    const promise = new Promise((resolve, reject) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = url;
+      link.onload = () => resolve(true);
+      link.onerror = () => {
+        link.remove();
+        reject(new Error(`Failed to load stylesheet: ${url}`));
+      };
+      document.head.appendChild(link);
+    });
+    styleLoadCache.set(url, promise);
+    promise.catch(() => {
+      styleLoadCache.delete(url);
+    });
+    return promise;
   }
 
   async function ensureHighlightLibrary() {
@@ -738,6 +966,9 @@ export function createPreviewController({
     if (!arrayBuffer || token !== state.previewToken) {
       return;
     }
+    if (arrayBuffer.byteLength > MAX_WORD_PREVIEW_BYTES) {
+      throw new Error(`Word preview is limited to ${formatBytes(MAX_WORD_PREVIEW_BYTES)}. Use Download.`);
+    }
 
     let result;
     try {
@@ -786,6 +1017,9 @@ export function createPreviewController({
     const arrayBuffer = await fetchBinaryForPreview(path, token);
     if (!arrayBuffer || token !== state.previewToken) {
       return;
+    }
+    if (arrayBuffer.byteLength > MAX_EXCEL_PREVIEW_BYTES) {
+      throw new Error(`Spreadsheet preview is limited to ${formatBytes(MAX_EXCEL_PREVIEW_BYTES)}. Use Download.`);
     }
 
     let workbook;
@@ -985,7 +1219,20 @@ export function createPreviewController({
     loading.textContent = `Loading PDF viewer (PDF.js ${PDF_JS_VERSION})...`;
     modalPreview.appendChild(loading);
 
-    const pdfjsLib = await getPdfJsLib();
+    let pdfjsLib = null;
+    try {
+      pdfjsLib = await getPdfJsLib();
+    } catch {
+      const fallbackFrame = document.createElement("iframe");
+      fallbackFrame.className = "html-preview-frame";
+      fallbackFrame.src = `/stream?path=${encodeURIComponent(path)}`;
+      fallbackFrame.title = "PDF preview";
+      modalPreview.replaceChildren(
+        createPreviewNote("PDF.js is unavailable offline. Using browser PDF preview fallback."),
+        fallbackFrame,
+      );
+      return;
+    }
     if (token !== state.previewToken) {
       return;
     }

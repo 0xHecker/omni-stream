@@ -1,0 +1,150 @@
+# Distributed LAN File Access (Coordinator + Agent)
+
+This repo now contains two production-oriented services in addition to the legacy Flask UI:
+
+- `coordinator/`: control plane (identity, pairing, ACL, transfer orchestration, events).
+- `agent/`: data plane on each sharing device (read/search/stream/download + inbox transfers).
+
+## One-Click Binaries (No Python Required)
+
+For non-coders, use the prebuilt binary for your OS:
+
+- Windows: `stream-local.exe`
+- macOS: `stream-local`
+- Linux: `stream-local`
+
+Important: there is no single universal binary for all OSes. Each OS needs its own native binary format.  
+This repo ships a self-contained binary per OS (no Python install required).
+AppImage is Linux-only, so the default release strategy is native binaries for all three desktop OSes.
+
+### First Run UX
+
+1. Launch the binary.
+2. Browser opens automatically.
+3. Complete `/setup` once:
+   - choose shared folder
+   - set 4-12 digit PIN
+4. Log in and use the app.
+
+Settings are saved locally to:
+
+- Windows: `%APPDATA%\\StreamLocalFiles\\settings.json`
+- macOS: `~/Library/Application Support/StreamLocalFiles/settings.json`
+- Linux: `${XDG_CONFIG_HOME:-~/.config}/StreamLocalFiles/settings.json`
+
+No manual environment variables are required for this flow.
+
+## Services
+
+- Coordinator: `py -m uv run python coordinator_app.py` (default `:7000`)
+- Agent: `py -m uv run python agent_app.py` (default `:7001`)
+- Legacy Flask app: `py -m uv run python app.py` (migration compatibility)
+
+## Build Binaries
+
+Local build (current OS only):
+
+1. `uv sync`
+2. `uv run python scripts/build_binary.py`
+3. Output: `dist/stream-local` (or `dist/stream-local.exe` on Windows)
+
+CI multi-OS build:
+
+- GitHub Actions workflow: `.github/workflows/build-binaries.yml`
+- Produces artifacts for Windows, macOS, and Linux.
+
+## Core Features Implemented
+
+- Multi-device principal pairing and device-bound credentials.
+- Share-level ACL checks (`read`, `download`, `request_send`, `accept_incoming`, `manage_share`).
+- Visible/hidden device mode.
+- Federated file search across accessible shares.
+- Transfer lifecycle:
+  - request -> receiver approve/reject
+  - receiver sets 4-digit passcode
+  - sender opens passcode window
+  - resumable chunk upload to receiver inbox
+  - commit (size verify + SHA-256 verify when provided)
+  - finalize to selected folder
+- Pausable transfer streams:
+  - `POST /agent/v1/inbox/transfers/{transfer_id}/pause`
+  - `POST /agent/v1/inbox/transfers/{transfer_id}/resume`
+  - `GET /agent/v1/inbox/transfers/{transfer_id}/status`
+
+## Quick Start
+
+1. Install uv (one time):
+   - `py -m pip install uv`
+2. Sync dependencies:
+   - `py -m uv sync`
+3. Copy env defaults:
+   - `copy .env.example .env` (Windows)
+   - `cp .env.example .env` (macOS/Linux)
+4. Replace placeholder secrets/PINs in `.env` before starting services.
+   - For local-only smoke tests, you can temporarily set `ALLOW_INSECURE_DEFAULTS=1`.
+5. Start coordinator:
+   - `py -m uv run python coordinator_app.py`
+6. Bootstrap first principal:
+   - `POST /api/v1/pairing/start`
+   - First call auto-creates principal + first client device.
+7. Set agent env:
+   - `AGENT_OWNER_PRINCIPAL_ID` to the bootstrap principal.
+   - `AGENT_PUBLIC_BASE_URL` reachable by other LAN clients.
+   - `AGENT_DEFAULT_SHARE_ROOT` to local shared folder.
+8. Start agent:
+   - `py -m uv run python agent_app.py`
+   - Agent auto-registers and sends heartbeats to coordinator.
+
+## Coordinator API (high-level)
+
+- Pairing:
+  - `POST /api/v1/pairing/start`
+  - `POST /api/v1/pairing/confirm`
+- Auth:
+  - `POST /api/v1/auth/token`
+  - `GET /api/v1/auth/me`
+- Catalog:
+  - `GET /api/v1/catalog/devices`
+  - `GET /api/v1/catalog/shares`
+- Files:
+  - `GET /api/v1/files/list`
+  - `GET /api/v1/files/search`
+- Transfers:
+  - `POST /api/v1/transfers`
+  - `GET /api/v1/transfers/{id}`
+  - `POST /api/v1/transfers/{id}/approve`
+  - `POST /api/v1/transfers/{id}/reject`
+  - `POST /api/v1/transfers/{id}/passcode/open`
+- Events:
+  - `GET /api/v1/events/token`
+  - `GET /api/v1/events/ws` (WebSocket)
+
+## Pause/Resume Upload Flow
+
+After `POST /api/v1/transfers/{id}/passcode/open`, use returned:
+- `upload_base_url`
+- `upload_ticket`
+
+For each file item:
+1. Stream chunks to:
+   - `POST {upload_base_url}/chunk?share_id=...&item_id=...&filename=...&size=...&sha256=...&ticket=...`
+   - Set headers:
+     - `x-chunk-offset: <current_offset>`
+     - `x-chunk-last: 1` on final chunk
+2. Pause anytime:
+   - `POST {upload_base_url}/pause?share_id=...&ticket=...`
+3. Resume:
+   - `POST {upload_base_url}/resume?share_id=...&ticket=...`
+4. Read offsets:
+   - `GET {upload_base_url}/status?share_id=...&ticket=...`
+5. Commit:
+   - `POST {upload_base_url}/commit?share_id=...&item_id=...&ticket=...`
+6. Finalize into destination:
+   - `POST {upload_base_url}/finalize?share_id=...&ticket=...`
+
+## Notes
+
+- Tickets are short-lived and signed by coordinator secret.
+- WebSocket auth uses short-lived event tokens (bearer-authenticated token endpoint + subprotocol transport).
+- Passcode windows are Argon2-hashed with lockout on repeated failures.
+- Device visibility hide mode removes devices from discovery for non-owners.

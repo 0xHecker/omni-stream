@@ -1,0 +1,21 @@
+[project]
+name = "stream-local-files-on-same-network"
+version = "0.1.0"
+description = "Distributed LAN file access with coordinator + device agents."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "flask>=3.0.0,<4.0.0",
+  "pillow>=10.0.0,<12.0.0",
+  "fastapi>=0.115.0,<1.0.0",
+  "uvicorn[standard]>=0.32.0,<1.0.0",
+  "sqlalchemy>=2.0.30,<3.0.0",
+  "alembic>=1.14.0,<2.0.0",
+  "httpx>=0.28.0,<1.0.0",
+  "argon2-cffi>=23.1.0,<26.0.0",
+  "python-multipart>=0.0.20,<1.0.0",
+]
+
+[tool.uv]
+package = false
+

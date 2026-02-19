@@ -1,8 +1,8 @@
 import { normalizePath } from "./utils.js";
 
 export function createApiClient({ onUnauthorized }) {
-  async function fetchJson(url) {
-    const response = await fetch(url);
+  async function fetchJson(url, { signal } = {}) {
+    const response = await fetch(url, { signal });
     if (response.status === 401) {
       onUnauthorized?.();
       return null;
@@ -24,9 +24,12 @@ export function createApiClient({ onUnauthorized }) {
     return response.json();
   }
 
-  async function listFiles(path = "") {
+  async function listFiles(path = "", { signal, maxResults = 400 } = {}) {
     const safePath = normalizePath(path);
-    return fetchJson(`/list?path=${encodeURIComponent(safePath)}`);
+    return fetchJson(
+      `/list?path=${encodeURIComponent(safePath)}&max=${encodeURIComponent(String(maxResults))}`,
+      { signal },
+    );
   }
 
   async function searchFiles({
@@ -34,19 +37,22 @@ export function createApiClient({ onUnauthorized }) {
     query = "",
     recursive = true,
     maxResults = 200,
+    signal,
   }) {
     const safePath = normalizePath(path);
     const safeQuery = String(query ?? "").trim();
     return fetchJson(
       `/search?path=${encodeURIComponent(safePath)}&q=${encodeURIComponent(safeQuery)}&recursive=${recursive ? "1" : "0"}&max=${encodeURIComponent(String(maxResults))}`,
+      { signal },
     );
   }
 
-  async function getAdjacentFile(path, direction) {
+  async function getAdjacentFile(path, direction, { signal } = {}) {
     const safePath = normalizePath(path);
     const safeDirection = direction === "prev" ? "prev" : "next";
     return fetchJson(
       `/get_adjacent_file?path=${encodeURIComponent(safePath)}&direction=${encodeURIComponent(safeDirection)}`,
+      { signal },
     );
   }
 

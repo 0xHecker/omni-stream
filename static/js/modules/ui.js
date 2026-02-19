@@ -52,6 +52,7 @@ export function renderFileList(
     const card = document.createElement("button");
     card.type = "button";
     card.className = "file-item";
+    card.dataset.kind = item.is_dir ? "directory" : String(item.type || "other");
 
     if (item.type === "image" && !item.is_dir) {
       const image = document.createElement("img");
@@ -78,6 +79,11 @@ export function renderFileList(
     name.className = "file-name";
     name.textContent = item.name;
     card.appendChild(name);
+
+    const kind = document.createElement("div");
+    kind.className = "file-kind";
+    kind.textContent = item.is_dir ? "Folder" : labelForType(item.type);
+    card.appendChild(kind);
 
     if (showParentPath) {
       const parentPath = normalizePath(item.parent_path || "");

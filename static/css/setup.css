@@ -1,0 +1,226 @@
+:root {
+  --bg: #f3f7f8;
+  --surface: #ffffff;
+  --border: #d7e2e5;
+  --text: #142127;
+  --text-muted: #5b6a71;
+  --accent: #0b8193;
+  --accent-strong: #0a6574;
+  --danger: #b43f3f;
+  --success: #1a7f53;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: "Sora", "Instrument Sans", sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 10% -6%, rgba(11, 129, 147, 0.2), transparent 42%),
+    radial-gradient(circle at 100% 100%, rgba(81, 134, 194, 0.16), transparent 42%),
+    var(--bg);
+  display: grid;
+  place-items: center;
+  overflow-x: hidden;
+  padding: 1rem;
+}
+
+.ambient-shape {
+  position: fixed;
+  border-radius: 999px;
+  pointer-events: none;
+  z-index: -1;
+  filter: blur(8px);
+}
+
+.shape-a {
+  width: 240px;
+  height: 240px;
+  left: -70px;
+  top: -90px;
+  background: rgba(11, 129, 147, 0.24);
+}
+
+.shape-b {
+  width: 280px;
+  height: 280px;
+  right: -90px;
+  bottom: -120px;
+  background: rgba(24, 156, 119, 0.16);
+}
+
+.setup-shell {
+  width: min(700px, 100%);
+}
+
+.setup-card {
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--surface) 95%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 24px 48px rgba(12, 34, 45, 0.15);
+  padding: 1.25rem 1.1rem;
+  animation: riseIn 0.42s ease both;
+}
+
+.eyebrow {
+  margin: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--accent-strong);
+}
+
+h2 {
+  margin: 0.38rem 0 0;
+  font-size: 1.28rem;
+}
+
+.hint {
+  margin: 0.36rem 0 0.9rem;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
+label {
+  display: block;
+  margin-top: 0.72rem;
+  margin-bottom: 0.3rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+input[type="text"],
+input[type="password"] {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.72rem 0.8rem;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+}
+
+input[type="text"]:focus-visible,
+input[type="password"]:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 65%, #fff);
+  outline-offset: 1px;
+}
+
+.grid-two {
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.9rem;
+  margin-bottom: 0;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
+.checkbox input {
+  accent-color: var(--accent);
+}
+
+button[type="submit"] {
+  width: 100%;
+  margin-top: 1rem;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  padding: 0.72rem 0.8rem;
+  background: linear-gradient(125deg, var(--accent), var(--accent-strong));
+  color: #fff;
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.16s ease, transform 0.16s ease;
+}
+
+button[type="submit"]:hover {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+}
+
+button[type="submit"]:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 65%, #fff);
+  outline-offset: 1px;
+}
+
+.error,
+.success {
+  margin: 0 0 0.72rem;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  padding: 0.52rem 0.6rem;
+}
+
+.error {
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+  color: var(--danger);
+}
+
+.success {
+  border: 1px solid color-mix(in srgb, var(--success) 45%, var(--border));
+  background: color-mix(in srgb, var(--success) 10%, var(--surface));
+  color: var(--success);
+}
+
+.meta {
+  margin: 0.68rem 0 0;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+
+.meta a {
+  color: var(--accent-strong);
+  text-decoration: none;
+}
+
+@media (max-width: 680px) {
+  .setup-card {
+    padding: 1.05rem 0.92rem;
+    border-radius: 16px;
+  }
+
+  .grid-two {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+@keyframes riseIn {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}

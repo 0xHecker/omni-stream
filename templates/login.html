@@ -4,23 +4,32 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Login | Network File Streamer</title>
+  <title>Login | Local File Grid</title>
   <link
     rel="stylesheet"
-    href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;700&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&display=swap"
   />
   <link rel="stylesheet" href="{{ url_for('static', filename='css/login.css') }}" />
 </head>
 
 <body>
+  <div class="ambient-shape shape-a" aria-hidden="true"></div>
+  <div class="ambient-shape shape-b" aria-hidden="true"></div>
   <main class="login-shell">
     <form class="login-card" method="POST">
+      <p class="eyebrow">Local Network Access</p>
       <h2>Enter PIN</h2>
+      <p class="hint">Use your access PIN to continue.</p>
+      {% if setup_done %}
+      <p class="success">Setup saved. Sign in with your new PIN.</p>
+      {% endif %}
       {% if error %}
       <p class="error">{{ error }}</p>
       {% endif %}
-      <input type="password" name="pin" autocomplete="current-password" required />
-      <button type="submit">Login</button>
+      <label class="sr-only" for="login-pin">PIN</label>
+      <input id="login-pin" type="password" name="pin" autocomplete="current-password" required minlength="4" maxlength="12" />
+      <button type="submit">Continue</button>
+      <p class="meta"><a href="{{ url_for('web.setup') }}">Open setup</a></p>
     </form>
   </main>
 </body>
