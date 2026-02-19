@@ -1,8 +1,15 @@
 from .file_service import (
+    generate_cached_thumbnail_bytes,
+    generate_file_thumbnail_bytes,
+    generate_placeholder_thumbnail_bytes,
+    generate_pdf_thumbnail_bytes,
+    generate_text_thumbnail_bytes,
     generate_thumbnail_bytes,
+    generate_video_thumbnail_bytes,
     get_adjacent_file,
     get_file_type,
     guess_mimetype,
+    iter_transcoded_video_chunks,
     list_directory,
     resolve_requested_path,
     search_entries,
@@ -10,10 +17,17 @@ from .file_service import (
 )
 
 __all__ = [
+    "generate_cached_thumbnail_bytes",
+    "generate_file_thumbnail_bytes",
+    "generate_placeholder_thumbnail_bytes",
+    "generate_pdf_thumbnail_bytes",
+    "generate_text_thumbnail_bytes",
     "generate_thumbnail_bytes",
+    "generate_video_thumbnail_bytes",
     "get_adjacent_file",
     "get_file_type",
     "guess_mimetype",
+    "iter_transcoded_video_chunks",
     "list_directory",
     "resolve_requested_path",
     "search_entries",

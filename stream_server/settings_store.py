@@ -97,7 +97,9 @@ def resolve_runtime_settings() -> dict[str, Any]:
 
     pin = _normalize_pin(os.environ.get("STREAM_PIN", "") or settings.get("pin", ""))
     root_dir = _normalize_root_dir(os.environ.get("STREAM_ROOT_DIR", "") or settings.get("root_dir", ""))
-    port = _normalize_port(os.environ.get("PORT", "") or settings.get("port", DEFAULT_PORT))
+    port = _normalize_port(
+        os.environ.get("WEB_PORT", "") or os.environ.get("PORT", "") or settings.get("port", DEFAULT_PORT)
+    )
     auto_open_browser = _normalize_auto_open_browser(
         os.environ.get("STREAM_AUTO_OPEN_BROWSER", "") or settings.get("auto_open_browser", True)
     )

@@ -24,10 +24,10 @@ export function createApiClient({ onUnauthorized }) {
     return response.json();
   }
 
-  async function listFiles(path = "", { signal, maxResults = 400 } = {}) {
+  async function listFiles(path = "", { signal, maxResults = 400, page = 1 } = {}) {
     const safePath = normalizePath(path);
     return fetchJson(
-      `/list?path=${encodeURIComponent(safePath)}&max=${encodeURIComponent(String(maxResults))}`,
+      `/list?path=${encodeURIComponent(safePath)}&max=${encodeURIComponent(String(maxResults))}&page=${encodeURIComponent(String(page))}`,
       { signal },
     );
   }
@@ -56,9 +56,15 @@ export function createApiClient({ onUnauthorized }) {
     );
   }
 
+  async function getVideoInfo(path, { signal } = {}) {
+    const safePath = normalizePath(path);
+    return fetchJson(`/video_info?path=${encodeURIComponent(safePath)}`, { signal });
+  }
+
   return {
     listFiles,
     searchFiles,
     getAdjacentFile,
+    getVideoInfo,
   };
 }

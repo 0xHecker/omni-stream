@@ -5,6 +5,7 @@ from pathlib import Path
 
 from flask import (
     Blueprint,
+    Response,
     abort,
     current_app,
     jsonify,
@@ -13,6 +14,7 @@ from flask import (
     request,
     send_file,
     session,
+    stream_with_context,
     url_for,
 )
 from werkzeug.exceptions import HTTPException
@@ -20,18 +22,23 @@ from werkzeug.exceptions import HTTPException
 from .auth import require_pin
 from .settings_store import load_settings, save_settings, settings_path
 from .services import (
+    generate_cached_thumbnail_bytes,
     generate_thumbnail_bytes,
+    resolve_requested_path,
+)
+from stream_server.services.file_service import (
     get_adjacent_file,
     get_file_type,
     guess_mimetype,
+    iter_transcoded_video_chunks,
     list_directory,
-    resolve_requested_path,
     search_entries,
+    get_video_info,
     to_client_path,
 )
 
 web = Blueprint("web", __name__)
-API_PREFIXES = ("/list", "/search", "/stream", "/thumbnail", "/get_adjacent_file", "/download")
+API_PREFIXES = ("/list", "/search", "/stream", "/stream_transcode", "/thumbnail", "/get_adjacent_file", "/download", "/video_info")
 
 
 def _is_setup_complete() -> bool:
@@ -118,6 +125,23 @@ def setup():
     )
 
 
+@web.get("/api/choose_folder")
+def choose_folder():
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        folder_path = filedialog.askdirectory(parent=root, title="Select Shared Folder")
+        root.destroy()
+        
+        return jsonify({"path": folder_path})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @web.get("/")
 @require_pin
 def index():
@@ -134,11 +158,12 @@ def list_files():
         abort(400, description="Path must point to a directory")
     try:
         max_results = int((request.args.get("max") or "400").strip())
+        page = int((request.args.get("page") or "1").strip())
     except ValueError:
-        abort(400, description="max must be an integer")
+        abort(400, description="max and page must be integers")
 
     try:
-        payload = list_directory(_root_dir(), target, max_entries=max_results)
+        payload = list_directory(_root_dir(), target, max_entries=max_results, page=page)
     except PermissionError:
         abort(403, description="Permission denied")
     return jsonify(payload)
@@ -211,6 +236,43 @@ def download_file():
     )
 
 
+@web.get("/stream_transcode")
+@require_pin
+def stream_transcoded_video():
+    target = _resolve_or_400(request.args.get("path"))
+    if not target.exists() or not target.is_file():
+        abort(404, description="File not found")
+
+    if get_file_type(target.name) != "video":
+        abort(400, description="Transcode endpoint supports video files only")
+
+    try:
+        start_time = float(request.args.get("start", "0"))
+        stream_iter = iter_transcoded_video_chunks(target, start_time=start_time)
+    except FileNotFoundError:
+        abort(503, description="Video transcoding is unavailable (ffmpeg not installed)")
+    except OSError:
+        abort(422, description="Unable to transcode this video file")
+
+    headers = {
+        "Cache-Control": "no-store",
+        "Accept-Ranges": "none",
+    }
+    return Response(stream_with_context(stream_iter), mimetype="video/mp4", headers=headers)
+
+
+@web.get("/video_info")
+@require_pin
+def video_info():
+    target = _resolve_or_400(request.args.get("path"))
+    if not target.exists() or not target.is_file():
+        abort(404, description="File not found")
+
+    if get_file_type(target.name) != "video":
+        abort(400, description="Endpoint supports video files only")
+
+    return jsonify(get_video_info(target))
+
 @web.get("/get_adjacent_file")
 @require_pin
 def adjacent_file():
@@ -229,25 +291,57 @@ def adjacent_file():
     except PermissionError:
         abort(403, description="Permission denied")
 
-    return jsonify({"path": to_client_path(sibling, _root_dir()), "type": get_file_type(sibling.name)})
+    try:
+        stat = sibling.stat()
+        size = stat.st_size
+        mtime = stat.st_mtime
+        ctime = stat.st_ctime
+    except OSError:
+        size = 0
+        mtime = 0
+        ctime = 0
+
+    return jsonify({
+        "name": sibling.name,
+        "is_dir": False,
+        "path": to_client_path(sibling, _root_dir()),
+        "parent_path": to_client_path(sibling.parent, _root_dir()),
+        "type": get_file_type(sibling.name),
+        "size": size,
+        "modified_at": mtime,
+        "created_at": ctime,
+    })
 
 
 @web.get("/thumbnail")
 @require_pin
 def thumbnail():
-    fallback_thumbnail = Path(current_app.static_folder or "static") / "img" / "default-thumbnail.svg"
     target = _resolve_or_400(request.args.get("path"))
-    if not target.exists() or not target.is_file():
-        return send_file(fallback_thumbnail, mimetype="image/svg+xml")
+    if not target.exists():
+        abort(404)
 
-    if get_file_type(target.name) != "image":
-        return send_file(fallback_thumbnail, mimetype="image/svg+xml")
+    size = current_app.config.get("THUMBNAIL_SIZE", (220, 220))
+    if target.is_dir():
+        try:
+            thumbnail_bytes = generate_cached_thumbnail_bytes(target, "directory", size)
+        except (FileNotFoundError, PermissionError, OSError):
+            abort(404)
+        return send_file(io.BytesIO(thumbnail_bytes), mimetype="image/jpeg", max_age=900)
+
+    if not target.is_file():
+        abort(404)
+
+    file_type = get_file_type(target.name)
+    if file_type == "svg":
+        return send_file(target, mimetype="image/svg+xml", conditional=True, etag=True, max_age=900)
 
     try:
-        size = current_app.config.get("THUMBNAIL_SIZE", (220, 220))
-        thumbnail_bytes = generate_thumbnail_bytes(target, size)
+        if file_type == "image":
+            thumbnail_bytes = generate_thumbnail_bytes(target, size)
+        else:
+            thumbnail_bytes = generate_cached_thumbnail_bytes(target, file_type, size)
     except (FileNotFoundError, PermissionError, OSError):
-        return send_file(fallback_thumbnail, mimetype="image/svg+xml")
+        abort(404)
 
     return send_file(io.BytesIO(thumbnail_bytes), mimetype="image/jpeg", max_age=900)
 

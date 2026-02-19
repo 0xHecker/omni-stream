@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 
+from anyio import to_thread
 from fastapi import FastAPI
 
 from .config import load_config
@@ -56,8 +57,10 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def _startup() -> None:
         init_db()
-        _seed_default_share()
         config = load_config()
+        limiter = to_thread.current_default_thread_limiter()
+        limiter.total_tokens = config.sync_thread_tokens
+        _seed_default_share()
         shares_payload = _load_share_payloads()
         if config.owner_principal_id:
             register_agent(config, shares_payload)

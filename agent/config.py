@@ -45,6 +45,7 @@ class AgentConfig:
     inbox_dir: Path
     heartbeat_interval_seconds: int
     upload_chunk_max_bytes: int
+    sync_thread_tokens: int
 
 
 def load_config() -> AgentConfig:
@@ -78,4 +79,5 @@ def load_config() -> AgentConfig:
         inbox_dir=inbox_dir,
         heartbeat_interval_seconds=_as_int("AGENT_HEARTBEAT_SECONDS", 20),
         upload_chunk_max_bytes=_as_int("AGENT_UPLOAD_CHUNK_MAX_BYTES", 8 * 1024 * 1024),
+        sync_thread_tokens=max(8, min(_as_int("AGENT_SYNC_THREAD_TOKENS", 64), 512)),
     )

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import atexit
 from concurrent.futures import TimeoutError, ThreadPoolExecutor, as_completed
+import threading
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -16,6 +18,25 @@ from ..services.agent_client import list_share, search_share
 from ..services.auth import AuthContext, issue_read_ticket, require_auth_context
 
 router = APIRouter(prefix="/api/v1/files", tags=["files"])
+_CONFIG = load_config()
+_SEARCH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(4, _CONFIG.search_executor_workers),
+    thread_name_prefix="coord-search",
+)
+_SEARCH_EXECUTOR_LOCK = threading.Lock()
+_SEARCH_EXECUTOR_CLOSED = False
+
+
+def shutdown_search_executor() -> None:
+    global _SEARCH_EXECUTOR_CLOSED
+    with _SEARCH_EXECUTOR_LOCK:
+        if _SEARCH_EXECUTOR_CLOSED:
+            return
+        _SEARCH_EXECUTOR_CLOSED = True
+    _SEARCH_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+
+
+atexit.register(shutdown_search_executor)
 
 
 def _build_file_urls(agent_base_url: str, share_id: str, path: str, ticket: str) -> dict:
@@ -58,7 +79,7 @@ def list_files(
     auth: AuthContext = Depends(require_auth_context),
     db: Session = Depends(get_db),
 ) -> dict:
-    config = load_config()
+    config = _CONFIG
     share = db.get(Share, share_id)
     if not share:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
@@ -103,7 +124,7 @@ def search_files(
     auth: AuthContext = Depends(require_auth_context),
     db: Session = Depends(get_db),
 ) -> dict:
-    config = load_config()
+    config = _CONFIG
     if device_id and share_id:
         share = db.get(Share, share_id)
         if not share:
@@ -214,13 +235,17 @@ def search_files(
             "errors": [],
         }
 
-    max_workers = min(8, max(1, len(candidate_shares)))
     timeout_seconds = timeout_budget_ms / 1000
-    pool = ThreadPoolExecutor(max_workers=max_workers)
-    future_map = {
-        pool.submit(_run_search, device, share, permissions): (device, share)
-        for device, share, permissions in candidate_shares
-    }
+    future_map = {}
+    try:
+        for device, share, permissions in candidate_shares:
+            future = _SEARCH_EXECUTOR.submit(_run_search, device, share, permissions)
+            future_map[future] = (device, share)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Search worker is unavailable",
+        ) from exc
     try:
         try:
             for future in as_completed(future_map, timeout=timeout_seconds):
@@ -251,7 +276,6 @@ def search_files(
         pending = [future for future in future_map if not future.done()]
         for future in pending:
             future.cancel()
-        pool.shutdown(wait=False, cancel_futures=True)
 
     results.sort(key=lambda item: (not item.get("is_dir", False), str(item.get("path", "")).casefold()))
     return {

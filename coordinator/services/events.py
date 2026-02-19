@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from contextlib import suppress
 from typing import Any
 
 from fastapi import WebSocket
@@ -46,6 +47,15 @@ class EventBroker:
                     current.discard(socket)
                 if not current:
                     self._connections.pop(principal_id, None)
+
+    async def close_all(self, *, code: int = 1001) -> None:
+        async with self._lock:
+            sockets = [socket for owned in self._connections.values() for socket in owned]
+            self._connections.clear()
+
+        for socket in sockets:
+            with suppress(Exception):
+                await socket.close(code=code)
 
 
 broker = EventBroker()

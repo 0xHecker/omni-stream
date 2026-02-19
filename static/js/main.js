@@ -72,6 +72,7 @@ document.addEventListener("DOMContentLoaded", () => {
     showStatus,
     onNavigateFile: navigateAdjacent,
     onUnauthorized: redirectToLogin,
+    api,
   });
 
   const debouncedSearch = debounce(() => {
@@ -152,15 +153,33 @@ document.addEventListener("DOMContentLoaded", () => {
   bindEvents();
   restoreTheme();
   loadDirectory("");
+  setupScrollTop();
+
   if (network) {
     network.init();
+  }
+
+  function setupScrollTop() {
+    let btn = document.getElementById("scroll-to-top");
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = "scroll-to-top";
+      btn.className = "scroll-top-btn hidden";
+      btn.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-arrow-up"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>`;
+      btn.setAttribute("aria-label", "Scroll to top");
+      btn.onclick = () => window.scrollTo({ top: 0, behavior: "smooth" });
+      document.body.appendChild(btn);
+    }
+    window.addEventListener("scroll", () => {
+      btn.classList.toggle("hidden", window.scrollY < 300);
+    });
   }
 
   function bindEvents() {
     dom.themeToggle.addEventListener("click", toggleTheme);
     dom.closeModal.addEventListener("click", () => preview.closePreview());
-    dom.prevButton.addEventListener("click", () => navigateAdjacent("prev"));
-    dom.nextButton.addEventListener("click", () => navigateAdjacent("next"));
+    dom.prevButton.addEventListener("click", (e) => { e.stopPropagation(); navigateAdjacent("prev"); });
+    dom.nextButton.addEventListener("click", (e) => { e.stopPropagation(); navigateAdjacent("next"); });
     dom.modal.addEventListener("click", preview.handleModalClick);
     dom.modal.addEventListener("touchstart", preview.handleTouchStart, { passive: true });
     dom.modal.addEventListener("touchend", preview.handleTouchEnd, { passive: true });
@@ -217,10 +236,10 @@ document.addEventListener("DOMContentLoaded", () => {
     return error instanceof DOMException && error.name === "AbortError";
   }
 
-  async function loadDirectory(path = "") {
+  async function loadDirectory(path = "", page = 1) {
     const { requestId, signal } = startFileRequest();
     try {
-      const data = await api.listFiles(path, { signal, maxResults: 400 });
+      const data = await api.listFiles(path, { signal, maxResults: 400, page });
       if (!data) {
         return;
       }
@@ -238,13 +257,42 @@ document.addEventListener("DOMContentLoaded", () => {
         onOpenDirectory: async (targetPath) => {
           await loadDirectory(targetPath);
         },
-        onOpenFile: async (targetPath, type) => {
-          await preview.openPreview(targetPath, type);
+        onOpenFile: async (item) => {
+          await preview.openPreview(item);
         },
       });
+
+      // Pagination setup
+      let paginationControls = dom.fileList.nextElementSibling;
+      if (paginationControls && paginationControls.classList.contains("pagination-controls")) {
+        paginationControls.remove();
+      }
+      if (data.total_pages > 1) {
+        paginationControls = document.createElement("div");
+        paginationControls.className = "pagination-controls";
+
+        const prevBtn = document.createElement("button");
+        prevBtn.className = "code-btn";
+        prevBtn.textContent = "Previous";
+        prevBtn.disabled = data.page <= 1;
+        prevBtn.onclick = () => loadDirectory(path, data.page - 1).then(() => window.scrollTo({ top: 0, behavior: "smooth" }));
+
+        const pageLabel = document.createElement("span");
+        pageLabel.textContent = `Page ${data.page} of ${data.total_pages}`;
+        pageLabel.className = "fallback-label";
+
+        const nextBtn = document.createElement("button");
+        nextBtn.className = "code-btn";
+        nextBtn.textContent = "Next";
+        nextBtn.disabled = data.page >= data.total_pages;
+        nextBtn.onclick = () => loadDirectory(path, data.page + 1).then(() => window.scrollTo({ top: 0, behavior: "smooth" }));
+
+        paginationControls.append(prevBtn, pageLabel, nextBtn);
+        dom.fileList.parentNode.insertBefore(paginationControls, dom.fileList.nextSibling);
+      }
+
       updateEmptyState((data.items || []).length, "browse");
-      const truncationText = data.truncated ? " (showing first results for speed)" : "";
-      showStatus(`${(data.items || []).length} item(s)${truncationText}`, false);
+      showStatus(`${(data.items || []).length} item(s)`, false);
     } catch (error) {
       if (isAbortError(error)) {
         return;
@@ -281,8 +329,8 @@ document.addEventListener("DOMContentLoaded", () => {
           dom.searchClear.classList.add("hidden");
           await loadDirectory(targetPath);
         },
-        onOpenFile: async (targetPath, type) => {
-          await preview.openPreview(targetPath, type);
+        onOpenFile: async (item) => {
+          await preview.openPreview(item);
         },
         showParentPath: true,
         basePath: data.base_path || state.currentPath,
@@ -317,7 +365,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!data) {
         return;
       }
-      await preview.openPreview(data.path, data.type);
+      await preview.openPreview(data);
     } catch (error) {
       if (isAbortError(error)) {
         return;

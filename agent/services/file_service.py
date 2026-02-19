@@ -94,9 +94,9 @@ def get_file_type(filename: str | Path) -> str:
 def guess_mimetype(path: Path, file_type: str | None = None) -> str:
     resolved_type = file_type or get_file_type(path.name)
     if resolved_type in {"code", "text", "markdown"}:
-        return "text/plain; charset=utf-8"
+        return "text/plain"
     if resolved_type == "html":
-        return "text/html; charset=utf-8"
+        return "text/html"
     if resolved_type == "svg":
         return "image/svg+xml"
 

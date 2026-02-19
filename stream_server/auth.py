@@ -6,7 +6,7 @@ from typing import Any, Callable, TypeVar, cast
 from flask import current_app, jsonify, redirect, request, session, url_for
 
 F = TypeVar("F", bound=Callable[..., Any])
-API_PREFIXES = ("/list", "/search", "/stream", "/thumbnail", "/get_adjacent_file", "/download")
+API_PREFIXES = ("/list", "/search", "/stream", "/stream_transcode", "/thumbnail", "/get_adjacent_file", "/download")
 
 
 def _is_setup_complete() -> bool:

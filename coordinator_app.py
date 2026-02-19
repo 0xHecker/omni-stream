@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import os
-
 import uvicorn
+
+from shared.runtime import default_worker_count, uvicorn_runtime_settings
 
 
 if __name__ == "__main__":
     uvicorn.run(
         "coordinator.main:app",
-        host=os.environ.get("COORDINATOR_HOST", "0.0.0.0"),
-        port=int(os.environ.get("COORDINATOR_PORT", "7000")),
-        reload=os.environ.get("COORDINATOR_RELOAD") == "1",
+        **uvicorn_runtime_settings("COORDINATOR", 7000, default_workers=default_worker_count(max_workers=4)),
     )
-

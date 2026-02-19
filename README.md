@@ -1,9 +1,10 @@
 # Distributed LAN File Access (Coordinator + Agent)
 
-This repo now contains two production-oriented services in addition to the legacy Flask UI:
+This repo contains three production services:
 
 - `coordinator/`: control plane (identity, pairing, ACL, transfer orchestration, events).
 - `agent/`: data plane on each sharing device (read/search/stream/download + inbox transfers).
+- `stream_server/`: web UI and local file browsing service.
 
 ## One-Click Binaries (No Python Required)
 
@@ -42,9 +43,10 @@ No manual environment variables are required for this flow.
 
 ## Services
 
-- Coordinator: `py -m uv run python coordinator_app.py` (default `:7000`)
-- Agent: `py -m uv run python agent_app.py` (default `:7001`)
-- Legacy Flask app: `py -m uv run python app.py` (migration compatibility)
+- Coordinator: `python coordinator_app.py` (default `:7000`)
+- Agent: `python agent_app.py` (default `:7001`)
+- Web UI: `python app.py --service web` (default `:5000`)
+- Unified launcher: `python app.py --service all` (starts coordinator + agent + web in dedicated processes)
 
 ## Build Binaries
 
@@ -121,7 +123,7 @@ Semantic versioning is controlled by `pyproject.toml` `version`.
 3. Replace placeholder secrets/PINs in `.env` before starting services.
    - For local-only smoke tests, you can temporarily set `ALLOW_INSECURE_DEFAULTS=1`.
 4. Start coordinator:
-   - `py -m uv run python coordinator_app.py`
+   - `python coordinator_app.py`
 5. Bootstrap first principal:
    - `POST /api/v1/pairing/start`
    - First call auto-creates principal + first client device.
@@ -130,8 +132,32 @@ Semantic versioning is controlled by `pyproject.toml` `version`.
    - `AGENT_PUBLIC_BASE_URL` reachable by other LAN clients.
    - `AGENT_DEFAULT_SHARE_ROOT` to local shared folder.
 7. Start agent:
-   - `py -m uv run python agent_app.py`
+   - `python agent_app.py`
    - Agent auto-registers and sends heartbeats to coordinator.
+
+## Runtime Performance Controls
+
+- Coordinator process model:
+  - `COORDINATOR_WORKERS` (uvicorn worker processes)
+  - `COORDINATOR_SYNC_THREAD_TOKENS` (thread slots for sync I/O handlers)
+  - `COORDINATOR_SEARCH_WORKERS` (shared federated-search executor threads)
+- Agent process model:
+  - `AGENT_WORKERS`
+  - `AGENT_SYNC_THREAD_TOKENS`
+- Web process model:
+  - `WEB_THREADS` (Waitress worker threads)
+  - `WEB_CONNECTION_LIMIT`
+- Thumbnail controls:
+  - `STREAM_ENABLE_VIDEO_THUMBNAILS=1|0`
+  - `STREAM_THUMBNAIL_CACHE_DIR` (optional temp cache path)
+  - `STREAM_THUMBNAIL_CACHE_TTL_SECONDS`
+  - `STREAM_THUMBNAIL_CACHE_MAX_MB`
+  - `STREAM_THUMBNAIL_MAX_CONCURRENT`
+  - `STREAM_THUMBNAIL_ACQUIRE_TIMEOUT_MS`
+  - `STREAM_FFMPEG_BIN` (optional explicit ffmpeg path)
+
+Defaults are tuned for low memory + high read throughput and can be raised per host.
+`imageio-ffmpeg` is bundled as a fallback ffmpeg runtime when system ffmpeg is not present.
 
 ## Coordinator API (high-level)
 
@@ -186,3 +212,8 @@ For each file item:
 - WebSocket auth uses short-lived event tokens (bearer-authenticated token endpoint + subprotocol transport).
 - Passcode windows are Argon2-hashed with lockout on repeated failures.
 - Device visibility hide mode removes devices from discovery for non-owners.
+
+## Test
+
+- Run backend smoke tests:
+  - `python -m pytest -q`

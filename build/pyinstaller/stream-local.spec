@@ -1,9 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_data_files
+
 
 project_root = Path.cwd()
 block_cipher = None
+imageio_ffmpeg_datas = collect_data_files("imageio_ffmpeg")
 
 
 a = Analysis(
@@ -13,8 +16,18 @@ a = Analysis(
     datas=[
         (str(project_root / "templates"), "templates"),
         (str(project_root / "static"), "static"),
+        *imageio_ffmpeg_datas,
     ],
-    hiddenimports=[],
+    hiddenimports=[
+        "coordinator.main",
+        "coordinator.routers",
+        "coordinator.services",
+        "agent.main",
+        "agent.routers",
+        "agent.services",
+        "shared",
+        "imageio_ffmpeg",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -1,4 +1,5 @@
 import { getPathBasename, getPathExtension, normalizePath } from "./utils.js";
+import { getIconSvg } from "./ui.js";
 
 const PDF_JS_VERSION = "5.4.624";
 const PDF_JS_MAIN_URL = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDF_JS_VERSION}/build/pdf.min.mjs`;
@@ -19,6 +20,7 @@ const SHEETJS_URL = `https://cdn.sheetjs.com/xlsx-${SHEETJS_VERSION}/package/dis
 const MAX_TEXT_PREVIEW_CHARS = 1200000;
 const MAX_TEXT_PREVIEW_BYTES = 1500000;
 const MAX_BINARY_PREVIEW_BYTES = 32 * 1024 * 1024;
+const MAX_PDF_PREVIEW_BYTES = 80 * 1024 * 1024;
 const MAX_WORD_PREVIEW_BYTES = 24 * 1024 * 1024;
 const MAX_EXCEL_PREVIEW_BYTES = 24 * 1024 * 1024;
 const MAX_SHEET_ROWS = 500;
@@ -31,6 +33,7 @@ export function createPreviewController({
   showStatus,
   onNavigateFile,
   onUnauthorized,
+  api,
 }) {
   const state = {
     currentFilePath: "",
@@ -63,6 +66,24 @@ export function createPreviewController({
   const styleLoadCache = new Map();
   let pdfJsLibPromise = null;
 
+  function buildStreamUrl(path, { cacheBust = false } = {}) {
+    const params = new URLSearchParams();
+    params.set("path", path);
+    if (cacheBust) {
+      params.set("v", String(Date.now()));
+    }
+    return `/stream?${params.toString()}`;
+  }
+
+  function buildTranscodeUrl(path, { cacheBust = false } = {}) {
+    const params = new URLSearchParams();
+    params.set("path", path);
+    if (cacheBust) {
+      params.set("v", String(Date.now()));
+    }
+    return `/stream_transcode?${params.toString()}`;
+  }
+
   function isModalOpen() {
     return !modal.classList.contains("hidden");
   }
@@ -71,17 +92,42 @@ export function createPreviewController({
     return state.currentFilePath;
   }
 
-  function updateDownloadLink(path) {
-    if (!path) {
+  function updateTopbarInfo(item) {
+    let infoSpan = modal.querySelector(".preview-modal-info");
+
+    if (!item) {
       downloadLink.classList.add("hidden");
       downloadLink.removeAttribute("href");
       downloadLink.removeAttribute("download");
+      if (infoSpan) infoSpan.remove();
+      const stitle = modal.querySelector("#preview-modal-title");
+      if (stitle) stitle.classList.add("sr-only");
       return;
     }
 
+    const path = item.path;
     downloadLink.classList.remove("hidden");
     downloadLink.href = `/download?path=${encodeURIComponent(path)}`;
     downloadLink.download = getPathBasename(path);
+
+    if (!infoSpan) {
+      infoSpan = document.createElement("div");
+      infoSpan.className = "preview-modal-info";
+      modal.querySelector(".modal-topbar").insertBefore(infoSpan, downloadLink);
+    }
+
+    const titleDiv = document.createElement("div");
+    titleDiv.className = "preview-info-title";
+    titleDiv.textContent = item.name;
+
+    const metaDiv = document.createElement("div");
+    metaDiv.className = "preview-info-meta";
+    let details = [];
+    if (typeof item.size === "number") details.push(formatBytes(item.size));
+    if (item.parent_path) details.push("/" + item.parent_path);
+    metaDiv.textContent = details.join(" • ") || "File Info";
+
+    infoSpan.replaceChildren(titleDiv, metaDiv);
   }
 
   function showModal() {
@@ -89,6 +135,7 @@ export function createPreviewController({
     if (active instanceof HTMLElement && !modal.contains(active)) {
       state.lastFocusedElement = active;
     }
+    document.body.style.overflow = "hidden";
     modal.classList.remove("hidden");
     const closeButton = modal.querySelector("#close-modal, .close-btn");
     if (closeButton instanceof HTMLElement) {
@@ -100,9 +147,10 @@ export function createPreviewController({
     state.previewToken += 1;
     teardownModalResources();
     modal.classList.add("hidden");
+    document.body.style.overflow = "";
     modalPreview.classList.remove("pdf-mode");
     modalPreview.replaceChildren();
-    updateDownloadLink(null);
+    updateTopbarInfo(null);
     if (state.lastFocusedElement && state.lastFocusedElement.isConnected) {
       state.lastFocusedElement.focus({ preventScroll: true });
     }
@@ -233,6 +281,20 @@ export function createPreviewController({
       return false;
     }
 
+    const video = modalPreview.querySelector("video");
+    if (video) {
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        video.currentTime = Math.min(video.duration, video.currentTime + 10);
+        return true;
+      }
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        video.currentTime = Math.max(0, video.currentTime - 10);
+        return true;
+      }
+    }
+
     if (event.key === "ArrowRight") {
       event.preventDefault();
       onNavigateFile("next");
@@ -247,7 +309,7 @@ export function createPreviewController({
   }
 
   async function fetchTextForPreview(path, token) {
-    const response = await fetch(`/stream?path=${encodeURIComponent(path)}`, {
+    const response = await fetch(buildStreamUrl(path), {
       headers: {
         Range: `bytes=0-${MAX_TEXT_PREVIEW_BYTES - 1}`,
       },
@@ -258,6 +320,9 @@ export function createPreviewController({
     if (response.status === 401) {
       onUnauthorized?.();
       return null;
+    }
+    if (response.status === 204) {
+      throw new Error("Server returned no content (204) for this file preview request.");
     }
     if (!response.ok) {
       throw new Error("Failed to load file text");
@@ -331,8 +396,8 @@ export function createPreviewController({
     return { text, truncated, totalChars };
   }
 
-  async function fetchBinaryForPreview(path, token) {
-    const response = await fetch(`/stream?path=${encodeURIComponent(path)}`);
+  async function fetchBinaryForPreview(path, token, { maxBytes = MAX_BINARY_PREVIEW_BYTES, cacheBust = false } = {}) {
+    const response = await fetch(buildStreamUrl(path, { cacheBust }));
     if (token !== state.previewToken) {
       return null;
     }
@@ -340,12 +405,15 @@ export function createPreviewController({
       onUnauthorized?.();
       return null;
     }
+    if (response.status === 204) {
+      throw new Error("Server returned no content (204) for this file preview request.");
+    }
     if (!response.ok) {
       throw new Error("Failed to load file");
     }
 
     const contentLength = Number(response.headers.get("content-length") || "0");
-    if (Number.isFinite(contentLength) && contentLength > MAX_BINARY_PREVIEW_BYTES) {
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
       throw new Error(`File is too large for inline preview (${formatBytes(contentLength)}). Use Download.`);
     }
 
@@ -355,7 +423,7 @@ export function createPreviewController({
       if (token !== state.previewToken) {
         return null;
       }
-      if (arrayBuffer.byteLength > MAX_BINARY_PREVIEW_BYTES) {
+      if (arrayBuffer.byteLength > maxBytes) {
         throw new Error(`File is too large for inline preview (${formatBytes(arrayBuffer.byteLength)}). Use Download.`);
       }
       return arrayBuffer;
@@ -380,7 +448,7 @@ export function createPreviewController({
         continue;
       }
       totalBytes += value.byteLength;
-      if (totalBytes > MAX_BINARY_PREVIEW_BYTES) {
+      if (totalBytes > maxBytes) {
         try {
           await reader.cancel();
         } catch {
@@ -420,6 +488,55 @@ export function createPreviewController({
     note.className = "preview-note";
     note.textContent = message;
     return note;
+  }
+
+  function createFallbackUI(item) {
+    const wrap = document.createElement("div");
+    wrap.className = "fallback-ui";
+
+    const iconBox = document.createElement("div");
+    iconBox.className = "fallback-icon";
+    iconBox.innerHTML = getIconSvg(item);
+
+    const titleBox = document.createElement("h2");
+    titleBox.className = "fallback-title";
+    titleBox.textContent = item.name || "Unknown File";
+
+    const detailsBox = document.createElement("div");
+    detailsBox.className = "fallback-details";
+
+    function addDetail(label, val) {
+      if (!val && val !== 0) return;
+      const row = document.createElement("div");
+      row.className = "fallback-detail-row";
+      const lbl = document.createElement("span");
+      lbl.className = "fallback-label";
+      lbl.textContent = label;
+      const v = document.createElement("span");
+      v.className = "fallback-value";
+      v.textContent = val;
+      row.append(lbl, v);
+      detailsBox.appendChild(row);
+    }
+
+    addDetail("Format", item.is_dir ? "Directory" : (item.type || "File").toUpperCase());
+    addDetail("Location", item.parent_path ? `/${item.parent_path}` : "/Root");
+    if (!item.is_dir) {
+      addDetail("File Size", formatBytes(item.size));
+    }
+    if (item.created_at) {
+      addDetail("Created", new Date(item.created_at * 1000).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }));
+    }
+    if (item.modified_at) {
+      addDetail("Modified", new Date(item.modified_at * 1000).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }));
+    }
+
+    const note = document.createElement("p");
+    note.className = "fallback-note";
+    note.textContent = "Preview not available for this file type. Use Download.";
+
+    wrap.append(iconBox, titleBox, detailsBox, note);
+    return wrap;
   }
 
   function createTabSystem(tabDefinitions, defaultTabId) {
@@ -749,39 +866,177 @@ export function createPreviewController({
     return shell;
   }
   function renderVideoPreview(path) {
+    const extension = getPathExtension(path).toLowerCase();
+    const preferCompatStream = [".mkv", ".avi", ".flv", ".wmv"].includes(extension);
+    const directUrl = buildStreamUrl(path, { cacheBust: true });
+
+    // We will append start parameter manually
+    const compatUrlBase = buildTranscodeUrl(path, { cacheBust: true });
+
+    let usingCompat = preferCompatStream;
+    let triedDirectFallback = false;
+    let triedCompatFallback = false;
+    let videoDuration = 0;
+    let activeCompatOffset = 0;
+
+    const wrap = document.createElement("div");
+    wrap.className = "video-preview-wrap";
+
+    const controls = document.createElement("div");
+    controls.className = "video-preview-actions";
+    const compatButton = document.createElement("button");
+    compatButton.type = "button";
+    compatButton.className = "code-btn";
+    compatButton.textContent = "Compatibility Audio";
+
     const video = document.createElement("video");
     video.controls = true;
     video.preload = "metadata";
-    video.src = `/stream?path=${encodeURIComponent(path)}`;
-    video.playsInline = true;
-    video.setAttribute("playsinline", "");
-
     const storageKey = `video-time:${path}`;
     const savedTime = Number(sessionStorage.getItem(storageKey) || "0");
     if (savedTime > 0) {
-      video.addEventListener("loadedmetadata", () => {
-        if (Number.isFinite(savedTime) && savedTime < video.duration) {
-          video.currentTime = savedTime;
-        }
-      });
+      if (usingCompat) {
+        activeCompatOffset = savedTime;
+      } else {
+        video.addEventListener("loadedmetadata", () => {
+          if (Number.isFinite(savedTime) && savedTime < video.duration) {
+            video.currentTime = savedTime;
+          }
+        });
+      }
     }
 
-    video.addEventListener("timeupdate", () => {
-      sessionStorage.setItem(storageKey, String(video.currentTime));
+    // Compat Custom Seek UI
+    const seekWrap = document.createElement("div");
+    seekWrap.className = "compat-seek-wrap hidden";
+    const seekLabel = document.createElement("span");
+    seekLabel.className = "fallback-label";
+    seekLabel.textContent = "Seek: ";
+    const seekSlider = document.createElement("input");
+    seekSlider.type = "range";
+    seekSlider.className = "compat-seek-slider";
+    seekSlider.min = 0;
+    seekSlider.max = 100;
+    seekSlider.value = activeCompatOffset;
+    seekWrap.append(seekLabel, seekSlider);
+
+    const updateSeekUI = () => {
+      if (usingCompat && videoDuration > 0) {
+        seekWrap.classList.remove("hidden");
+        seekSlider.max = videoDuration;
+      } else {
+        seekWrap.classList.add("hidden");
+      }
+    };
+
+    seekSlider.addEventListener("change", (e) => {
+      const newTime = Number(e.target.value);
+      activeCompatOffset = newTime;
+      sessionStorage.setItem(storageKey, String(newTime));
+      video.src = compatUrlBase + "&start=" + newTime;
+      video.play().catch(() => { });
     });
 
+    if (api && api.getVideoInfo) {
+      api.getVideoInfo(path).then(res => {
+        if (res && res.duration > 0) {
+          videoDuration = res.duration;
+          updateSeekUI();
+        }
+      }).catch(() => { });
+    }
+
+    video.src = usingCompat ? (compatUrlBase + "&start=" + activeCompatOffset) : directUrl;
+    video.playsInline = true;
+    video.setAttribute("playsinline", "");
+
+    video.addEventListener("timeupdate", () => {
+      const realTime = usingCompat ? (activeCompatOffset + video.currentTime) : video.currentTime;
+      sessionStorage.setItem(storageKey, String(realTime));
+      if (usingCompat && videoDuration > 0) {
+        seekSlider.value = realTime;
+      }
+    });
+
+    const switchToSource = (nextSource) => {
+      const previousTime = usingCompat ? (activeCompatOffset + video.currentTime) : (video.currentTime || 0);
+      const wasPaused = video.paused;
+      usingCompat = nextSource === "compat";
+      updateSeekUI();
+
+      if (usingCompat) {
+        activeCompatOffset = previousTime;
+        video.src = compatUrlBase + "&start=" + activeCompatOffset;
+      } else {
+        video.src = directUrl;
+      }
+      video.addEventListener("loadedmetadata", () => {
+        if (previousTime > 0 && Number.isFinite(video.duration) && previousTime < video.duration) {
+          video.currentTime = previousTime;
+        }
+        if (!wasPaused) {
+          video.play().catch(() => {
+            // Browser can block autoplay after source switches.
+          });
+        }
+      }, { once: true });
+      video.load();
+    };
+
     video.addEventListener("error", () => {
+      if (!usingCompat) {
+        if (triedCompatFallback) {
+          modalPreview.replaceChildren(
+            createPreviewNote("Video preview failed on this device/browser. Use Download."),
+          );
+          return;
+        }
+        triedCompatFallback = true;
+        switchToSource("compat");
+        return;
+      }
+      if (!triedDirectFallback) {
+        triedDirectFallback = true;
+        switchToSource("direct");
+        return;
+      }
+      if (!triedCompatFallback) {
+        triedCompatFallback = true;
+        switchToSource("compat");
+        return;
+      }
       modalPreview.replaceChildren(
-        createPreviewNote("Video preview failed on this device/browser. Use Download or an external player."),
+        createPreviewNote("Video preview failed (compat mode unavailable). Install ffmpeg on server or use Download."),
       );
     });
 
-    modalPreview.appendChild(video);
+    compatButton.addEventListener("click", () => {
+      if (usingCompat) {
+        return;
+      }
+      triedCompatFallback = true;
+      switchToSource("compat");
+    });
+
+    if (preferCompatStream) {
+      triedCompatFallback = true;
+    } else {
+      triedDirectFallback = true;
+    }
+
+    if (preferCompatStream) {
+      const note = createPreviewNote("Compatibility mode is enabled for this video format to preserve audio.");
+      wrap.appendChild(note);
+    }
+
+    controls.appendChild(compatButton);
+    wrap.append(controls, video);
+    modalPreview.appendChild(wrap);
   }
 
   function renderImagePreview(path) {
     const image = document.createElement("img");
-    image.src = `/stream?path=${encodeURIComponent(path)}`;
+    image.src = buildStreamUrl(path, { cacheBust: true });
     image.alt = "Image preview";
     image.addEventListener("error", () => {
       modalPreview.replaceChildren(
@@ -909,7 +1164,7 @@ export function createPreviewController({
     previewWrap.className = "svg-preview-wrap";
 
     const previewImage = document.createElement("img");
-    previewImage.src = `/stream?path=${encodeURIComponent(path)}`;
+    previewImage.src = buildStreamUrl(path, { cacheBust: true });
     previewImage.alt = "SVG preview";
     previewImage.addEventListener("error", () => {
       previewWrap.replaceChildren(
@@ -1128,8 +1383,9 @@ export function createPreviewController({
     renderSheet(sheetNames[0]);
   }
 
-  async function openPreview(path, type) {
-    const safePath = normalizePath(path);
+  async function openPreview(item) {
+    const safePath = normalizePath(item.path);
+    const type = item.type;
     const token = state.previewToken + 1;
     state.previewToken = token;
     state.currentFilePath = safePath;
@@ -1137,7 +1393,7 @@ export function createPreviewController({
     teardownModalResources();
     modalPreview.classList.remove("pdf-mode");
     modalPreview.replaceChildren();
-    updateDownloadLink(safePath);
+    updateTopbarInfo(item);
     showModal();
 
     try {
@@ -1178,9 +1434,7 @@ export function createPreviewController({
         return;
       }
 
-      modalPreview.replaceChildren(
-        createPreviewNote("Preview not available for this file type. Use Download."),
-      );
+      modalPreview.replaceChildren(createFallbackUI(item));
     } catch (error) {
       if (token !== state.previewToken) {
         return;
@@ -1225,7 +1479,7 @@ export function createPreviewController({
     } catch {
       const fallbackFrame = document.createElement("iframe");
       fallbackFrame.className = "html-preview-frame";
-      fallbackFrame.src = `/stream?path=${encodeURIComponent(path)}`;
+      fallbackFrame.src = buildStreamUrl(path, { cacheBust: true });
       fallbackFrame.title = "PDF preview";
       modalPreview.replaceChildren(
         createPreviewNote("PDF.js is unavailable offline. Using browser PDF preview fallback."),
@@ -1262,7 +1516,7 @@ export function createPreviewController({
     const zoomInButton = createPdfButton("Zoom +", () => setPdfZoom(state.pdf.zoomFactor + 0.15));
     const fitButton = createPdfButton("Fit", () => resetPdfZoom());
     const openButton = createPdfButton("Open Tab", () => {
-      window.open(`/stream?path=${encodeURIComponent(path)}`, "_blank", "noopener");
+      window.open(buildStreamUrl(path, { cacheBust: true }), "_blank", "noopener");
     });
     zoomGroup.append(zoomOutButton, zoomLabel, zoomInButton, fitButton, openButton);
 
@@ -1277,12 +1531,44 @@ export function createPreviewController({
     shell.append(toolbar, canvasWrap);
     modalPreview.appendChild(shell);
 
-    const loadingTask = pdfjsLib.getDocument({
-      url: `/stream?path=${encodeURIComponent(path)}`,
-    });
+    const primaryUrl = buildStreamUrl(path, { cacheBust: true });
+    let pdfDoc = null;
+    let primaryError = null;
 
-    state.pdf.loadingTask = loadingTask;
-    const pdfDoc = await loadingTask.promise;
+    try {
+      const loadingTask = pdfjsLib.getDocument({ url: primaryUrl });
+      state.pdf.loadingTask = loadingTask;
+      pdfDoc = await loadingTask.promise;
+    } catch (error) {
+      primaryError = error;
+      state.pdf.loadingTask = null;
+    }
+
+    if (!pdfDoc) {
+      const arrayBuffer = await fetchBinaryForPreview(path, token, {
+        maxBytes: MAX_PDF_PREVIEW_BYTES,
+        cacheBust: true,
+      });
+      if (!arrayBuffer || token !== state.previewToken) {
+        return;
+      }
+      try {
+        const fallbackTask = pdfjsLib.getDocument({
+          data: arrayBuffer,
+          disableAutoFetch: true,
+        });
+        state.pdf.loadingTask = fallbackTask;
+        pdfDoc = await fallbackTask.promise;
+      } catch (error) {
+        const primaryText = primaryError?.message || "Unknown error";
+        const fallbackText = error?.message || "Unknown error";
+        throw new Error(`PDF load failed (URL mode: ${primaryText}; binary mode: ${fallbackText})`);
+      }
+    }
+
+    if (!pdfDoc) {
+      throw new Error("PDF load failed.");
+    }
 
     if (token !== state.previewToken) {
       const destroyResult = pdfDoc.destroy();

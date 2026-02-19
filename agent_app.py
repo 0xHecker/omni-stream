@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import os
-
 import uvicorn
+
+from shared.runtime import default_worker_count, uvicorn_runtime_settings
 
 
 if __name__ == "__main__":
     uvicorn.run(
         "agent.main:app",
-        host=os.environ.get("AGENT_HOST", "0.0.0.0"),
-        port=int(os.environ.get("AGENT_PORT", "7001")),
-        reload=os.environ.get("AGENT_RELOAD") == "1",
+        **uvicorn_runtime_settings("AGENT", 7001, default_workers=default_worker_count(max_workers=2)),
     )
-

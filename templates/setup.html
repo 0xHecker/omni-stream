@@ -5,10 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Setup | Local File Grid</title>
-  <link
-    rel="stylesheet"
-    href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&display=swap"
-  />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="{{ url_for('static', filename='css/setup.css') }}" />
 </head>
 
@@ -30,20 +27,27 @@
 
       {% if require_current_pin %}
       <label for="current-pin">Current PIN</label>
-      <input id="current-pin" name="current_pin" type="password" inputmode="numeric" required minlength="4" maxlength="12" placeholder="Enter current PIN">
+      <input id="current-pin" name="current_pin" type="password" inputmode="numeric" required minlength="4"
+        maxlength="12" placeholder="Enter current PIN">
       {% endif %}
 
       <label for="root-dir">Shared Folder</label>
-      <input id="root-dir" name="root_dir" type="text" required value="{{ root_dir_value }}" placeholder="C:\Users\You\Documents">
+      <div class="folder-picker-group">
+        <input id="root-dir" name="root_dir" type="text" required value="{{ root_dir_value }}"
+          placeholder="C:\Users\You\Documents">
+        <button type="button" class="folder-btn" id="browse-btn">Browse...</button>
+      </div>
 
       <div class="grid-two">
         <div>
           <label for="pin">Access PIN</label>
-          <input id="pin" name="pin" type="password" inputmode="numeric" required minlength="4" maxlength="12" placeholder="4-12 digits">
+          <input id="pin" name="pin" type="password" inputmode="numeric" required minlength="4" maxlength="12"
+            placeholder="4-12 digits">
         </div>
         <div>
           <label for="pin-confirm">Confirm PIN</label>
-          <input id="pin-confirm" name="pin_confirm" type="password" inputmode="numeric" required minlength="4" maxlength="12" placeholder="Repeat PIN">
+          <input id="pin-confirm" name="pin_confirm" type="password" inputmode="numeric" required minlength="4"
+            maxlength="12" placeholder="Repeat PIN">
         </div>
       </div>
 
@@ -59,6 +63,33 @@
       {% endif %}
     </form>
   </main>
+
+  <script>
+    const browseBtn = document.getElementById('browse-btn');
+    const rootDirInput = document.getElementById('root-dir');
+
+    if (browseBtn && rootDirInput) {
+      browseBtn.addEventListener('click', async () => {
+        try {
+          const originalText = browseBtn.textContent;
+          browseBtn.textContent = 'Opening...';
+          browseBtn.disabled = true;
+
+          const response = await fetch('/api/choose_folder');
+          const data = await response.json();
+
+          if (data && data.path) {
+            rootDirInput.value = data.path;
+          }
+        } catch (err) {
+          console.error('Failed to open folder picker:', err);
+        } finally {
+          browseBtn.textContent = 'Browse...';
+          browseBtn.disabled = false;
+        }
+      });
+    }
+  </script>
 </body>
 
 </html>

@@ -1,13 +1,33 @@
 :root {
   --bg: #f3f7f8;
   --surface: #ffffff;
+  --surface-soft: #edf3f4;
+  --surface-elevated: #f9fcfc;
   --border: #d7e2e5;
   --text: #142127;
   --text-muted: #5b6a71;
   --accent: #0b8193;
   --accent-strong: #0a6574;
+  --accent-soft: rgba(11, 129, 147, 0.14);
   --danger: #b43f3f;
   --success: #1a7f53;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #09090b;
+    --surface: #18181b;
+    --surface-soft: #27272a;
+    --surface-elevated: #3f3f46;
+    --text: #fafafa;
+    --text-muted: #a1a1aa;
+    --border: #27272a;
+    --accent: #2db2c4;
+    --accent-strong: #40c4d6;
+    --accent-soft: rgba(45, 178, 196, 0.15);
+    --danger: #ef4444;
+    --success: #22c55e;
+  }
 }
 
 * {
@@ -56,6 +76,12 @@ body {
   background: rgba(24, 156, 119, 0.16);
 }
 
+@media (prefers-color-scheme: dark) {
+  .shape-a, .shape-b {
+    background: rgba(45, 178, 196, 0.05);
+  }
+}
+
 .login-shell {
   width: min(410px, calc(100% - 1.4rem));
 }
@@ -63,11 +89,16 @@ body {
 .login-card {
   border: 1px solid var(--border);
   border-radius: 20px;
-  background: color-mix(in srgb, var(--surface) 95%, transparent);
-  backdrop-filter: blur(6px);
-  box-shadow: 0 24px 48px rgba(12, 34, 45, 0.15);
+  background: var(--surface);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.1);
   padding: 1.25rem 1.1rem;
   animation: riseIn 0.42s ease both;
+}
+
+@media (prefers-color-scheme: dark) {
+  .login-card {
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5);
+  }
 }
 
 .eyebrow {
@@ -126,10 +157,11 @@ input[type="password"] {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 0.72rem 0.8rem;
-  background: #fff;
+  padding: 0.8rem 1rem;
+  background: var(--surface-elevated);
   color: var(--text);
   font: inherit;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 input[type="password"]:focus-visible {
@@ -143,7 +175,7 @@ button[type="submit"] {
   border: 1px solid transparent;
   border-radius: 12px;
   padding: 0.72rem 0.8rem;
-  background: linear-gradient(125deg, var(--accent), var(--accent-strong));
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
   color: #fff;
   font: inherit;
   font-size: 0.9rem;

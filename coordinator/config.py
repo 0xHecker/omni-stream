@@ -38,6 +38,8 @@ class CoordinatorConfig:
     transfer_ticket_ttl_seconds: int
     passcode_window_seconds: int
     pairing_code_ttl_seconds: int
+    sync_thread_tokens: int
+    search_executor_workers: int
 
 
 def load_config() -> CoordinatorConfig:
@@ -64,4 +66,6 @@ def load_config() -> CoordinatorConfig:
         transfer_ticket_ttl_seconds=_as_int("COORDINATOR_TRANSFER_TICKET_TTL", 300),
         passcode_window_seconds=_as_int("COORDINATOR_PASSCODE_WINDOW_SECONDS", 300),
         pairing_code_ttl_seconds=_as_int("COORDINATOR_PAIRING_CODE_TTL", 600),
+        sync_thread_tokens=max(8, min(_as_int("COORDINATOR_SYNC_THREAD_TOKENS", 64), 512)),
+        search_executor_workers=max(4, min(_as_int("COORDINATOR_SEARCH_WORKERS", 16), 128)),
     )
