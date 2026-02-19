@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 env:
   UV_VERSION: "0.10.4"
@@ -30,14 +31,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          REPO_DIR="$(mktemp -d)"
           REPO_HOST="${GITHUB_SERVER_URL#https://}"
           REPO_URL="https://x-access-token:${GITHUB_TOKEN}@${REPO_HOST}/${GITHUB_REPOSITORY}.git"
-          git clone --filter=blob:none --no-checkout "$REPO_URL" "$REPO_DIR"
-          cd "$REPO_DIR"
+          git config --global --add safe.directory "$PWD"
+          if [ -d .git ]; then
+            git remote remove origin || true
+          else
+            git init .
+          fi
+          git remote add origin "$REPO_URL"
           git fetch --depth=1 --force origin "$GITHUB_REF"
           git checkout --force FETCH_HEAD
-          echo "REPO_DIR=$REPO_DIR" >> "$GITHUB_ENV"
 
       - name: Ensure Python on Linux
         if: runner.os == 'Linux'
@@ -97,7 +101,6 @@ jobs:
 
       - name: Resolve version
         shell: bash
-        working-directory: ${{ env.REPO_DIR }}
         run: |
           set -euo pipefail
           VERSION=$("$PYTHON_BIN" - <<'PY'
@@ -120,28 +123,24 @@ jobs:
 
       - name: Sync dependencies
         shell: bash
-        working-directory: ${{ env.REPO_DIR }}
         run: |
           set -euo pipefail
           "$PYTHON_BIN" -m uv sync --frozen
 
       - name: Build binary
         shell: bash
-        working-directory: ${{ env.REPO_DIR }}
         run: |
           set -euo pipefail
           "$PYTHON_BIN" -m uv run python scripts/build_binary.py
 
       - name: Smoke test built binary
         shell: bash
-        working-directory: ${{ env.REPO_DIR }}
         run: |
           set -euo pipefail
           "$PYTHON_BIN" -m uv run python scripts/smoke_binary.py --runner-os "${{ runner.os }}"
 
       - name: Package binary
         shell: bash
-        working-directory: ${{ env.REPO_DIR }}
         run: |
           set -euo pipefail
           "$PYTHON_BIN" -m uv run python scripts/package_binary.py --version "$VERSION" --runner-os "${{ runner.os }}"
@@ -150,7 +149,6 @@ jobs:
       - name: Publish GitHub release assets on version tags
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
-        working-directory: ${{ env.REPO_DIR }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -163,3 +161,90 @@ jobs:
             exit 1
           fi
           "$PYTHON_BIN" scripts/publish_release_assets.py --tag "${GITHUB_REF#refs/tags/}" --files "${FILES[@]}"
+
+  publish-ghcr-package:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-and-package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Clone repository at current revision
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO_HOST="${GITHUB_SERVER_URL#https://}"
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@${REPO_HOST}/${GITHUB_REPOSITORY}.git"
+          git config --global --add safe.directory "$PWD"
+          if [ -d .git ]; then
+            git remote remove origin || true
+          else
+            git init .
+          fi
+          git remote add origin "$REPO_URL"
+          git fetch --depth=1 --force origin "$GITHUB_REF"
+          git checkout --force FETCH_HEAD
+
+      - name: Ensure Python on Ubuntu runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1; then
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip python3-venv
+
+      - name: Resolve Python command
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v python >/dev/null 2>&1; then
+            PYTHON_BIN=python
+          elif command -v python3 >/dev/null 2>&1; then
+            PYTHON_BIN=python3
+          else
+            echo "Python is not available on this runner."
+            exit 1
+          fi
+          "$PYTHON_BIN" --version
+          echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
+
+      - name: Download release assets
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          "$PYTHON_BIN" scripts/download_release_assets.py --tag "${GITHUB_REF#refs/tags/}" --out-dir ghcr-assets
+          ls -la ghcr-assets
+
+      - name: Build and push GHCR package
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          OWNER_LOWER="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          REPO_NAME_LOWER="$(echo "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+          IMAGE="ghcr.io/${OWNER_LOWER}/${REPO_NAME_LOWER}-binaries"
+
+          cat > Dockerfile.ghcr <<EOF
+          FROM scratch
+          LABEL org.opencontainers.image.title="stream-local-binaries"
+          LABEL org.opencontainers.image.description="Prebuilt desktop binaries for stream-local-files-on-same-network"
+          LABEL org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY}"
+          LABEL org.opencontainers.image.version="${TAG}"
+          COPY . /artifacts/
+          EOF
+
+          echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker build -f Dockerfile.ghcr -t "${IMAGE}:${TAG}" -t "${IMAGE}:latest" ghcr-assets
+          docker push "${IMAGE}:${TAG}"
+          docker push "${IMAGE}:latest"
