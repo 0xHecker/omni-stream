@@ -1,0 +1,120 @@
+name: SemVer Tag Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "SemVer bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - prerelease
+      prerelease_label:
+        description: "Label for prerelease bumps (used only when bump=prerelease)"
+        required: false
+        default: "rc"
+        type: string
+  push:
+    branches:
+      - main
+      - master
+
+concurrency:
+  group: semver-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  bump-and-tag:
+    if: github.event_name == 'workflow_dispatch' || (github.actor != 'github-actions[bot]' && !startsWith(github.event.head_commit.message, 'chore(release): v'))
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone repository branch
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BRANCH="${GITHUB_REF_NAME}"
+          REPO_DIR="$(mktemp -d)"
+          REPO_HOST="${GITHUB_SERVER_URL#https://}"
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@${REPO_HOST}/${GITHUB_REPOSITORY}.git"
+          git clone --filter=blob:none --single-branch --branch "$BRANCH" "$REPO_URL" "$REPO_DIR"
+          cd "$REPO_DIR"
+          echo "REPO_DIR=$REPO_DIR" >> "$GITHUB_ENV"
+
+      - name: Ensure Python on Ubuntu runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1; then
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip python3-venv
+
+      - name: Resolve Python command
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v python >/dev/null 2>&1; then
+            PYTHON_BIN=python
+          elif command -v python3 >/dev/null 2>&1; then
+            PYTHON_BIN=python3
+          else
+            echo "Python is not available on this runner."
+            exit 1
+          fi
+          "$PYTHON_BIN" --version
+          echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
+
+      - name: Bump version
+        id: version
+        shell: bash
+        working-directory: ${{ env.REPO_DIR }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            BUMP="${{ inputs.bump }}"
+            LABEL="${{ inputs.prerelease_label }}"
+          else
+            BUMP="patch"
+            LABEL="rc"
+          fi
+          NEW_VERSION=$("$PYTHON_BIN" scripts/bump_semver.py --bump "$BUMP" --prerelease-label "$LABEL")
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Commit version change
+        shell: bash
+        working-directory: ${{ env.REPO_DIR }}
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.version.outputs.new_version }}"
+          if git diff --quiet -- pyproject.toml; then
+            echo "No version change detected."
+            exit 0
+          fi
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo "Tag already exists: $TAG"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml
+          git commit -m "chore(release): $TAG"
+
+      - name: Tag and push
+        shell: bash
+        working-directory: ${{ env.REPO_DIR }}
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.version.outputs.new_version }}"
+          git tag "$TAG"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "$TAG"

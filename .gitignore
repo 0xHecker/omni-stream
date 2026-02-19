@@ -8,6 +8,7 @@ __pycache__/
 .env
 .pytest_cache/
 dist/
+packages/
 build/*
 !build/pyinstaller/
 !build/pyinstaller/stream-local.spec

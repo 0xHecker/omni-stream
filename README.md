@@ -32,6 +32,12 @@ Settings are saved locally to:
 - macOS: `~/Library/Application Support/StreamLocalFiles/settings.json`
 - Linux: `${XDG_CONFIG_HOME:-~/.config}/StreamLocalFiles/settings.json`
 
+If startup fails, the app now writes a crash log to:
+
+- Windows: `%APPDATA%\\StreamLocalFiles\\logs\\startup-error-*.log`
+- macOS: `~/Library/Application Support/StreamLocalFiles/logs/startup-error-*.log`
+- Linux: `${XDG_CONFIG_HOME:-~/.config}/StreamLocalFiles/logs/startup-error-*.log`
+
 No manual environment variables are required for this flow.
 
 ## Services
@@ -51,7 +57,27 @@ Local build (current OS only):
 CI multi-OS build:
 
 - GitHub Actions workflow: `.github/workflows/build-binaries.yml`
-- Produces artifacts for Windows, macOS, and Linux.
+- Runs on every commit push (all branches/tags) and on manual dispatch.
+- Builds and packages native binaries for Windows, macOS, and Linux.
+- On `v*` tags, automatically publishes a GitHub Release with package files attached.
+- Uses shell-only steps (no external marketplace `uses:` actions), which fits orgs that only allow owner-scoped actions.
+
+## SemVer Automation
+
+Semantic versioning is controlled by `pyproject.toml` `version`.
+
+- Manual local bump:
+  - `python scripts/bump_semver.py --bump patch`
+  - `python scripts/bump_semver.py --bump minor`
+  - `python scripts/bump_semver.py --bump major`
+  - `python scripts/bump_semver.py --bump prerelease --prerelease-label rc`
+
+- GitHub automated bump + tag:
+  - Workflow: `.github/workflows/semver-tag.yml`
+  - Runs automatically on every push to `master`/`main` (`patch` bump).
+  - Can also be run manually from Actions tab with custom bump type.
+  - It updates `pyproject.toml`, commits, creates `vX.Y.Z` tag, and pushes.
+  - Tag push triggers `.github/workflows/build-binaries.yml` to build packages and publish release assets.
 
 ## Core Features Implemented
 
@@ -73,25 +99,26 @@ CI multi-OS build:
 
 ## Quick Start
 
-1. Install uv (one time):
-   - `py -m pip install uv`
-2. Sync dependencies:
-   - `py -m uv sync`
-3. Copy env defaults:
+1. Bootstrap environment (installs Python + uv + dependencies if missing):
+   - Windows (PowerShell): `powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1`
+   - macOS/Linux: `bash scripts/bootstrap.sh`
+   - If system Python is missing, bootstrap installs a uv-managed Python 3.11 runtime (sandboxed) and uses that.
+   - Note: auto-install may require admin/sudo privileges and internet access.
+2. Copy env defaults:
    - `copy .env.example .env` (Windows)
    - `cp .env.example .env` (macOS/Linux)
-4. Replace placeholder secrets/PINs in `.env` before starting services.
+3. Replace placeholder secrets/PINs in `.env` before starting services.
    - For local-only smoke tests, you can temporarily set `ALLOW_INSECURE_DEFAULTS=1`.
-5. Start coordinator:
+4. Start coordinator:
    - `py -m uv run python coordinator_app.py`
-6. Bootstrap first principal:
+5. Bootstrap first principal:
    - `POST /api/v1/pairing/start`
    - First call auto-creates principal + first client device.
-7. Set agent env:
+6. Set agent env:
    - `AGENT_OWNER_PRINCIPAL_ID` to the bootstrap principal.
    - `AGENT_PUBLIC_BASE_URL` reachable by other LAN clients.
    - `AGENT_DEFAULT_SHARE_ROOT` to local shared folder.
-8. Start agent:
+7. Start agent:
    - `py -m uv run python agent_app.py`
    - Agent auto-registers and sends heartbeats to coordinator.
 

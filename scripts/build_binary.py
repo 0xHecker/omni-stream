@@ -18,13 +18,17 @@ def main() -> int:
     if importlib.util.find_spec("PyInstaller") is not None:
         cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", str(spec_path)]
     else:
-        uv_executable = shutil.which("uv")
+        uv_executable = os.environ.get("UV") or shutil.which("uv")
         if uv_executable:
-            cmd = [uv_executable, "tool", "run", "--from", "pyinstaller", "pyinstaller", "--noconfirm", "--clean", str(spec_path)]
-        elif os.name == "nt" and shutil.which("py"):
-            cmd = ["py", "-m", "uv", "tool", "run", "--from", "pyinstaller", "pyinstaller", "--noconfirm", "--clean", str(spec_path)]
+            # Build inside the project environment so application dependencies are bundled.
+            cmd = [uv_executable, "run", "--with", "pyinstaller", "pyinstaller", "--noconfirm", "--clean", str(spec_path)]
         else:
-            cmd = [sys.executable, "-m", "uv", "tool", "run", "--from", "pyinstaller", "pyinstaller", "--noconfirm", "--clean", str(spec_path)]
+            install_cmd = [sys.executable, "-m", "pip", "install", "pyinstaller"]
+            print("Running:", " ".join(install_cmd))
+            installed = subprocess.run(install_cmd, cwd=repo_root, check=False)
+            if int(installed.returncode) != 0:
+                return int(installed.returncode)
+            cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", str(spec_path)]
 
     print("Running:", " ".join(cmd))
     completed = subprocess.run(cmd, cwd=repo_root, check=False)

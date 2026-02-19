@@ -1,13 +1,18 @@
-name: Build Desktop Binaries
+name: Build And Publish Desktop Binaries
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - "**"
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
-  build:
+  build-and-package:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -15,28 +20,128 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Clone repository at current revision
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO_DIR="$(mktemp -d)"
+          REPO_HOST="${GITHUB_SERVER_URL#https://}"
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@${REPO_HOST}/${GITHUB_REPOSITORY}.git"
+          git clone --filter=blob:none --no-checkout "$REPO_URL" "$REPO_DIR"
+          cd "$REPO_DIR"
+          git fetch --depth=1 --force origin "$GITHUB_REF"
+          git checkout --force FETCH_HEAD
+          echo "REPO_DIR=$REPO_DIR" >> "$GITHUB_ENV"
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      - name: Ensure Python on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1; then
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip python3-venv
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v6
+      - name: Ensure Python on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1; then
+            exit 0
+          fi
+          brew install python@3.11 || brew install python
+
+      - name: Ensure Python on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (Get-Command python -ErrorAction SilentlyContinue) { exit 0 }
+          if (Get-Command py -ErrorAction SilentlyContinue) { exit 0 }
+          if (Get-Command choco -ErrorAction SilentlyContinue) {
+            choco install python --yes
+            exit 0
+          }
+          throw "Python not found and Chocolatey is unavailable on this runner."
+
+      - name: Resolve Python command and install uv
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v python >/dev/null 2>&1; then
+            PYTHON_BIN=python
+          elif command -v python3 >/dev/null 2>&1; then
+            PYTHON_BIN=python3
+          else
+            echo "Python is not available on this runner."
+            exit 1
+          fi
+          "$PYTHON_BIN" --version
+          "$PYTHON_BIN" -m pip install --upgrade pip uv
+          echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
+
+      - name: Resolve version
+        shell: bash
+        working-directory: ${{ env.REPO_DIR }}
+        run: |
+          set -euo pipefail
+          VERSION=$("$PYTHON_BIN" - <<'PY'
+          import re
+          from pathlib import Path
+          text = Path("pyproject.toml").read_text(encoding="utf-8")
+          match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', text)
+          if not match:
+              raise SystemExit("Version not found in pyproject.toml")
+          print(match.group(1))
+          PY
+          )
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+            TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+            if [[ "$TAG_VERSION" != "$VERSION" ]]; then
+              VERSION="$TAG_VERSION"
+            fi
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Sync dependencies
-        run: uv sync
+        shell: bash
+        working-directory: ${{ env.REPO_DIR }}
+        run: |
+          set -euo pipefail
+          "$PYTHON_BIN" -m uv sync
 
       - name: Build binary
-        run: uv run python scripts/build_binary.py
+        shell: bash
+        working-directory: ${{ env.REPO_DIR }}
+        run: |
+          set -euo pipefail
+          "$PYTHON_BIN" -m uv run python scripts/build_binary.py
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: stream-local-${{ matrix.os }}
-          path: |
-            dist/stream-local
-            dist/stream-local.exe
-          if-no-files-found: error
+      - name: Package binary
+        shell: bash
+        working-directory: ${{ env.REPO_DIR }}
+        run: |
+          set -euo pipefail
+          "$PYTHON_BIN" -m uv run python scripts/package_binary.py --version "$VERSION" --runner-os "${{ runner.os }}"
+          ls -la packages
+
+      - name: Publish GitHub release assets on version tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        working-directory: ${{ env.REPO_DIR }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          FILES=(packages/*)
+          if [[ "${#FILES[@]}" -eq 0 ]]; then
+            echo "No package files found to publish."
+            exit 1
+          fi
+          "$PYTHON_BIN" scripts/publish_release_assets.py --tag "${GITHUB_REF#refs/tags/}" --files "${FILES[@]}"
