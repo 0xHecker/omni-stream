@@ -13,6 +13,10 @@ DEFAULT_PORT = 5000
 
 
 def _settings_dir() -> Path:
+    override = os.environ.get("STREAM_SETTINGS_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+
     if os.name == "nt":
         appdata = os.environ.get("APPDATA")
         if appdata:

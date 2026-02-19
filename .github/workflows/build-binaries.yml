@@ -137,6 +137,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export STREAM_SETTINGS_DIR="${RUNNER_TEMP}/stream-local-smoke-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          mkdir -p "$STREAM_SETTINGS_DIR"
           "$PYTHON_BIN" -m uv run python scripts/smoke_binary.py --runner-os "${{ runner.os }}"
 
       - name: Package binary
@@ -173,6 +175,7 @@ jobs:
           "$PYTHON_BIN" scripts/publish_release_assets.py --tag "$PUBLISH_TAG" --files "${FILES[@]}"
 
   publish-ghcr-package:
+    if: always()
     needs: build-and-package
     runs-on: ubuntu-latest
     permissions:

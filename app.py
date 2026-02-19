@@ -18,6 +18,10 @@ APP_DIR_NAME = "StreamLocalFiles"
 
 
 def _settings_dir() -> Path:
+    override = os.environ.get("STREAM_SETTINGS_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+
     system = platform.system()
     if system == "Windows":
         appdata = os.environ.get("APPDATA")

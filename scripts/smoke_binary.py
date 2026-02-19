@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import os
 import signal
+import socket
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -35,6 +37,12 @@ def terminate_process_tree(proc: subprocess.Popen[str]) -> None:
         os.killpg(proc.pid, signal.SIGKILL)
 
 
+def pick_local_tcp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke-test the packaged stream-local binary")
     parser.add_argument("--runner-os", required=True, help="GitHub runner OS value")
@@ -45,9 +53,13 @@ def main() -> int:
     binary_path = resolve_binary_path(Path(args.dist_dir).resolve(), args.runner_os)
 
     env = os.environ.copy()
+    smoke_settings_dir = Path(tempfile.mkdtemp(prefix="stream-local-smoke-"))
+    selected_port = pick_local_tcp_port()
     env["STREAM_NO_BROWSER"] = "1"
     env["HOST"] = "127.0.0.1"
-    env["PORT"] = "0"
+    env["PORT"] = str(selected_port)
+    env["WEB_PORT"] = str(selected_port)
+    env["STREAM_SETTINGS_DIR"] = str(smoke_settings_dir)
 
     proc = subprocess.Popen(
         [str(binary_path)],
