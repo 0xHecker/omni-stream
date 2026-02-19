@@ -61,14 +61,16 @@ CI multi-OS build:
 - Builds and packages native binaries for Windows, macOS, and Linux.
 - Uses pinned tool versions and lockfile sync for reproducible builds.
 - Smoke-tests the built binary before packaging.
-- On `v*` tags, automatically publishes a GitHub Release with package files attached.
-- On `v*` tags, also publishes a GHCR package so binaries are visible under the repo `Packages` tab.
+- On every push, publishes binaries to rolling `edge` release assets.
+- On `v*` tags, publishes immutable versioned release assets.
+- On every push, publishes a GHCR package so binaries are visible under the repo `Packages` tab.
 - Uses shell-only steps (no external marketplace `uses:` actions), which fits orgs that only allow owner-scoped actions.
 
 GitHub Packages target:
 
-- `ghcr.io/<owner>/<repo>-binaries:<tag>`
-- Example: `ghcr.io/0xhecker/stream-local-files-on-same-network-binaries:v1.2.3`
+- `ghcr.io/<owner>/<repo>-binaries:edge` (latest commit on branch pushes)
+- `ghcr.io/<owner>/<repo>-binaries:sha-<commit12>` (immutable commit build)
+- `ghcr.io/<owner>/<repo>-binaries:<tag>` and `:latest` on version tags
 
 ## SemVer Automation
 

@@ -146,8 +146,18 @@ jobs:
           "$PYTHON_BIN" -m uv run python scripts/package_binary.py --version "$VERSION" --runner-os "${{ runner.os }}"
           ls -la packages
 
-      - name: Publish GitHub release assets on version tags
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Resolve publish release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+            PUBLISH_TAG="${GITHUB_REF#refs/tags/}"
+          else
+            PUBLISH_TAG="edge"
+          fi
+          echo "PUBLISH_TAG=$PUBLISH_TAG" >> "$GITHUB_ENV"
+
+      - name: Publish GitHub release assets
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -160,10 +170,9 @@ jobs:
             echo "No package files found to publish."
             exit 1
           fi
-          "$PYTHON_BIN" scripts/publish_release_assets.py --tag "${GITHUB_REF#refs/tags/}" --files "${FILES[@]}"
+          "$PYTHON_BIN" scripts/publish_release_assets.py --tag "$PUBLISH_TAG" --files "${FILES[@]}"
 
   publish-ghcr-package:
-    if: startsWith(github.ref, 'refs/tags/v')
     needs: build-and-package
     runs-on: ubuntu-latest
     permissions:
@@ -214,6 +223,17 @@ jobs:
           "$PYTHON_BIN" --version
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
 
+      - name: Resolve publish release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+            PUBLISH_TAG="${GITHUB_REF#refs/tags/}"
+          else
+            PUBLISH_TAG="edge"
+          fi
+          echo "PUBLISH_TAG=$PUBLISH_TAG" >> "$GITHUB_ENV"
+
       - name: Download release assets
         shell: bash
         env:
@@ -221,7 +241,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          "$PYTHON_BIN" scripts/download_release_assets.py --tag "${GITHUB_REF#refs/tags/}" --out-dir ghcr-assets
+          "$PYTHON_BIN" scripts/download_release_assets.py --tag "$PUBLISH_TAG" --out-dir ghcr-assets
           ls -la ghcr-assets
 
       - name: Build and push GHCR package
@@ -230,21 +250,29 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF#refs/tags/}"
           OWNER_LOWER="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           REPO_NAME_LOWER="$(echo "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
           IMAGE="ghcr.io/${OWNER_LOWER}/${REPO_NAME_LOWER}-binaries"
+          SHORT_SHA="$(echo "${GITHUB_SHA}" | cut -c1-12)"
+
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+            IMAGE_TAG="${GITHUB_REF#refs/tags/}"
+            IMAGE_ALIAS="latest"
+          else
+            IMAGE_TAG="sha-${SHORT_SHA}"
+            IMAGE_ALIAS="edge"
+          fi
 
           cat > Dockerfile.ghcr <<EOF
           FROM scratch
           LABEL org.opencontainers.image.title="stream-local-binaries"
           LABEL org.opencontainers.image.description="Prebuilt desktop binaries for stream-local-files-on-same-network"
           LABEL org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY}"
-          LABEL org.opencontainers.image.version="${TAG}"
+          LABEL org.opencontainers.image.version="${IMAGE_TAG}"
           COPY . /artifacts/
           EOF
 
           echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-          docker build -f Dockerfile.ghcr -t "${IMAGE}:${TAG}" -t "${IMAGE}:latest" ghcr-assets
-          docker push "${IMAGE}:${TAG}"
-          docker push "${IMAGE}:latest"
+          docker build -f Dockerfile.ghcr -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:${IMAGE_ALIAS}" ghcr-assets
+          docker push "${IMAGE}:${IMAGE_TAG}"
+          docker push "${IMAGE}:${IMAGE_ALIAS}"
