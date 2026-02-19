@@ -3,631 +3,77 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>File Browser and Streamer</title>
+    <title>Network File Streamer</title>
     <link
       rel="stylesheet"
-      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+      href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;700&display=swap"
     />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
       rel="stylesheet"
+      href="{{ url_for('static', filename='css/main.css') }}"
     />
-    <style>
-      :root {
-        --background-color: #f8f9fa;
-        --text-color: #212529;
-        --link-color: #0d6efd;
-        --preview-bg-color: #ffffff;
-        --primary-color: #0d6efd;
-        --secondary-color: #6c757d;
-        --border-color: #dee2e6;
-        --hover-color: #e9ecef;
-      }
-
-      [data-theme="dark"] {
-        --background-color: #212529;
-        --text-color: #f8f9fa;
-        --link-color: #6ea8fe;
-        --preview-bg-color: #343a40;
-        --primary-color: #6ea8fe;
-        --secondary-color: #adb5bd;
-        --border-color: #495057;
-        --hover-color: #343a40;
-      }
-
-      body {
-        font-family: "Inter", sans-serif;
-        margin: 0;
-        padding: 0;
-        background-color: var(--background-color);
-        color: var(--text-color);
-        transition:
-          background-color 0.3s,
-          color 0.3s;
-      }
-
-      .container {
-        max-width: 1200px;
-        margin: 0 auto;
-        padding: 20px;
-      }
-
-      h1 {
-        text-align: center;
-        margin-bottom: 30px;
-        font-weight: 600;
-        color: var(--primary-color);
-      }
-
-      .breadcrumb {
-        display: flex;
-        flex-wrap: wrap;
-        padding: 0.75rem 1rem;
-        margin-bottom: 1rem;
-        list-style: none;
-        background-color: var(--preview-bg-color);
-        border-radius: 0.25rem;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-      }
-
-      .breadcrumb-item {
-        display: flex;
-        align-items: center;
-      }
-
-      .breadcrumb-item a {
-        color: var(--link-color);
-        text-decoration: none;
-        transition: color 0.2s;
-      }
-
-      .breadcrumb-item a:hover {
-        color: var(--primary-color);
-      }
-
-      .breadcrumb-item + .breadcrumb-item::before {
-        display: inline-block;
-        padding-right: 0.5rem;
-        padding-left: 0.5rem;
-        color: var(--secondary-color);
-        content: "/";
-      }
-
-      .file-list {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-        gap: 20px;
-      }
-
-      .file-item {
-        background-color: var(--preview-bg-color);
-        border: 1px solid var(--border-color);
-        border-radius: 8px;
-        padding: 15px;
-        text-align: center;
-        transition:
-          transform 0.2s,
-          box-shadow 0.2s;
-        cursor: pointer;
-      }
-
-      .file-item:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-      }
-
-      .file-icon {
-        font-size: 2.5em;
-        margin-bottom: 10px;
-        color: var(--primary-color);
-      }
-
-      .file-name {
-        font-size: 0.9em;
-        word-break: break-word;
-        margin-bottom: 10px;
-      }
-
-      .file-preview {
-        display: none;
-        margin-top: 20px;
-        padding: 15px;
-        background-color: var(--preview-bg-color);
-        border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        grid-column: 1 / -1;
-        /* Span full width */
-      }
-
-      .file-preview.show {
-        display: block;
-      }
-
-      .file-preview video,
-      .file-preview img,
-      .file-preview embed {
-        max-width: 100%;
-        max-height: 300px;
-        border-radius: 4px;
-      }
-
-      #preview {
-        margin-top: 30px;
-        background-color: var(--preview-bg-color);
-        padding: 20px;
-        border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-      }
-
-      video,
-      img,
-      embed {
-        max-width: 100%;
-        border-radius: 8px;
-      }
-
-      .toggle-theme {
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        cursor: pointer;
-        font-size: 1.5em;
-        background-color: var(--preview-bg-color);
-        border: none;
-        border-radius: 50%;
-        width: 50px;
-        height: 50px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        transition: background-color 0.3s;
-      }
-
-      .toggle-theme:hover {
-        background-color: var(--hover-color);
-      }
-
-      @media (max-width: 768px) {
-        .file-list {
-          grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-        }
-
-        .container {
-          padding: 10px;
-        }
-
-        .file-icon {
-          font-size: 2em;
-        }
-
-        .file-name {
-          font-size: 0.8em;
-        }
-      }
-
-      .modal {
-        display: none;
-        position: fixed;
-        z-index: 1000;
-        left: 0;
-        top: 0;
-        width: 100%;
-        height: 100%;
-        overflow: auto;
-        background-color: rgba(0, 0, 0, 0.4);
-        backdrop-filter: blur(5px);
-      }
-
-      .modal-content {
-        background-color: var(--preview-bg-color);
-        margin: 5% auto;
-        padding: 20px;
-        border: 1px solid var(--border-color);
-        border-radius: 8px;
-        width: 90%;
-        max-width: 800px;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-      }
-
-      @media (max-width: 768px) {
-        .modal-content {
-          width: 95%;
-          margin: 10% auto;
-          padding: 15px;
-        }
-      }
-
-      .close {
-        color: var(--secondary-color);
-        float: right;
-        font-size: 28px;
-        font-weight: bold;
-        cursor: pointer;
-        transition: color 0.2s;
-      }
-
-      .close:hover,
-      .close:focus {
-        color: var(--primary-color);
-        text-decoration: none;
-      }
-
-      #modal-preview {
-        margin-top: 20px;
-      }
-
-      #modal-preview video,
-      #modal-preview img,
-      #modal-preview embed,
-      #modal-preview iframe {
-        max-width: 100%;
-        max-height: 70vh;
-        display: block;
-        margin: 0 auto;
-        border-radius: 4px;
-      }
-
-      #modal-preview pre {
-        max-height: 70vh;
-        overflow: auto;
-        background-color: var(--background-color);
-        padding: 15px;
-        border-radius: 4px;
-      }
-
-      @media (max-width: 768px) {
-        .modal-content {
-          width: 95%;
-          margin: 10% auto;
-        }
-      }
-      .file-thumbnail {
-        width: 100%;
-        height: 120px;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        overflow: hidden;
-        margin-bottom: 10px;
-      }
-
-      .file-thumbnail img {
-        max-width: 100%;
-        max-height: 100%;
-        object-fit: cover;
-      }
-      .nav-arrows {
-        position: absolute;
-        top: 50%;
-        transform: translateY(-50%);
-        font-size: 2em;
-        color: var(--primary-color);
-        cursor: pointer;
-        background-color: rgba(0, 0, 0, 0.5);
-        padding: 10px;
-        border-radius: 50%;
-        transition: background-color 0.3s;
-      }
-
-      .nav-arrows:hover {
-        background-color: rgba(0, 0, 0, 0.7);
-      }
-
-      .nav-prev {
-        left: 10px;
-      }
-
-      .nav-next {
-        right: 10px;
-      }
-
-      .modal-content {
-        position: relative;
-      }
-
-      #login-modal {
-        display: none;
-        position: fixed;
-        z-index: 1000;
-        left: 0;
-        top: 0;
-        width: 100%;
-        height: 100%;
-        overflow: auto;
-        background-color: rgba(0, 0, 0, 0.4);
-        backdrop-filter: blur(5px);
-      }
-
-      #login-modal .modal-content {
-        background-color: var(--preview-bg-color);
-        margin: 15% auto;
-        padding: 20px;
-        border: 1px solid var(--border-color);
-        border-radius: 8px;
-        width: 300px;
-        text-align: center;
-      }
-
-      #login-modal input[type="password"] {
-        width: 100%;
-        padding: 10px;
-        margin: 10px 0;
-        border: 1px solid var(--border-color);
-        border-radius: 4px;
-      }
-
-      #login-modal button {
-        background-color: var(--primary-color);
-        color: white;
-        padding: 10px 20px;
-        border: none;
-        border-radius: 4px;
-        cursor: pointer;
-      }
-
-      #login-modal button:hover {
-        background-color: var(--link-color);
-      }
-    </style>
   </head>
-
   <body>
-    <div id="login-modal" class="modal">
-      <div class="modal-content">
-        <h2>Enter Password</h2>
-        <form id="login-form">
-          <input type="password" id="pin" name="pin" required />
-          <button type="submit">Login</button>
-        </form>
+    <header class="topbar">
+      <div class="brand">
+        <h1>Network File Streamer</h1>
+        <p id="root-label">Root: {{ root_dir }}</p>
       </div>
-    </div>
+      <div class="actions">
+        <button
+          id="theme-toggle"
+          class="theme-toggle"
+          type="button"
+          aria-label="Toggle theme"
+        >
+          Light
+        </button>
+        <a class="logout-link" href="{{ url_for('web.logout') }}">Logout</a>
+      </div>
+    </header>
 
-    <button class="toggle-theme" onclick="toggleTheme()">
-      <i class="fas fa-moon"></i>
-    </button>
-
-    <div class="container">
-      <h1>File Browser and Streamer</h1>
+    <main class="container">
       <nav aria-label="breadcrumb">
-        <ol class="breadcrumb" id="breadcrumb"></ol>
+        <ol id="breadcrumb" class="breadcrumb"></ol>
       </nav>
-      <div id="file-list" class="file-list"></div>
-      <div id="preview"></div>
-    </div>
-    <div id="modal" class="modal">
+      <section class="search-panel" aria-label="Search files">
+        <input
+          id="search-input"
+          class="search-input"
+          type="search"
+          placeholder="Search files or folders..."
+          autocomplete="off"
+        />
+        <label class="search-option" for="search-recursive">
+          <input id="search-recursive" type="checkbox" checked />
+          Recursive
+        </label>
+        <button id="search-clear" class="search-clear hidden" type="button">Clear</button>
+      </section>
+      <section id="status" class="status hidden" aria-live="polite"></section>
+      <section id="file-list" class="file-list"></section>
+    </main>
+
+    <div id="preview-modal" class="modal hidden" role="dialog" aria-modal="true">
       <div class="modal-content">
-        <span class="close">&times;</span>
-        <div id="modal-preview"></div>
-        <div class="nav-arrows nav-prev" onclick="navigateFile('prev')">
-          &#10094;
+        <div class="modal-topbar">
+          <a id="download-file" class="download-btn hidden" href="#" download>Download</a>
+          <button id="close-modal" class="close-btn" type="button" aria-label="Close">
+            x
+          </button>
         </div>
-        <div class="nav-arrows nav-next" onclick="navigateFile('next')">
-          &#10095;
+        <div class="modal-nav">
+          <button id="nav-prev" class="nav-btn" type="button" aria-label="Previous">
+            &#10094;
+          </button>
+          <button id="nav-next" class="nav-btn" type="button" aria-label="Next">
+            &#10095;
+          </button>
         </div>
+        <div id="modal-preview" class="modal-preview"></div>
       </div>
     </div>
-    <script>
-      let currentPath = "";
 
-      function showLoginModal() {
-        document.getElementById("login-modal").style.display = "block";
-      }
-
-      function hideLoginModal() {
-        document.getElementById("login-modal").style.display = "none";
-      }
-
-      document
-        .getElementById("login-form")
-        .addEventListener("submit", function (e) {
-          e.preventDefault();
-          const pin = document.getElementById("pin").value;
-          fetch("/login", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/x-www-form-urlencoded",
-            },
-            body: `pin=${pin}`,
-          }).then((response) => {
-            if (response.ok) {
-              hideLoginModal();
-              loadFiles();
-            } else {
-              alert("Invalid PIN");
-            }
-          });
-        });
-
-      function loadFiles(path = "") {
-        currentPath = path;
-        fetch(`/list?path=${encodeURIComponent(path)}`)
-          .then((response) => {
-            if (response.ok) {
-              return response.json();
-            } else if (response.status === 302) {
-              showLoginModal();
-              throw new Error("Authentication required");
-            }
-          })
-          .then((data) => {
-            updateBreadcrumbs(path);
-            updateFileList(data);
-          })
-          .catch((error) => {
-            console.error("Error:", error);
-          });
-      }
-
-      function updateBreadcrumbs(path) {
-        const breadcrumb = document.getElementById("breadcrumb");
-        const pathParts = path.split("/").filter((part) => part);
-        let breadcrumbPath = "";
-
-        breadcrumb.innerHTML =
-          '<li class="breadcrumb-item"><a href="#" onclick="loadFiles(\'\')"><i class="fas fa-home"></i> Root</a></li>';
-        pathParts.forEach((part, index) => {
-          breadcrumbPath += `/${part}`;
-          if (index === pathParts.length - 1) {
-            breadcrumb.innerHTML += `<li class="breadcrumb-item active" aria-current="page">${part}</li>`;
-          } else {
-            breadcrumb.innerHTML += `<li class="breadcrumb-item"><a href="#" onclick="loadFiles('${breadcrumbPath}')">${part}</a></li>`;
-          }
-        });
-      }
-
-      function showFilePreview(path, type) {
-        currentFilePath = path;
-        const modalPreview = document.getElementById("modal-preview");
-        modalPreview.innerHTML = "";
-
-        if (type === "video") {
-          const savedTime = sessionStorage.getItem(`videoTime-${path}`) || 0;
-          modalPreview.innerHTML = `<video controls><source src="/stream?path=${encodeURIComponent(path)}" type="video/mp4"></video>`;
-          const video = modalPreview.querySelector("video");
-          video.currentTime = savedTime;
-          video.addEventListener("timeupdate", () => {
-            sessionStorage.setItem(`videoTime-${path}`, video.currentTime);
-          });
-        } else if (type === "image") {
-          modalPreview.innerHTML = `<img src="/stream?path=${encodeURIComponent(path)}" alt="Image preview">`;
-        } else if (type === "pdf") {
-          modalPreview.innerHTML = `<embed src="/stream?path=${encodeURIComponent(path)}" type="application/pdf" width="100%" height="600px" />`;
-        } else if (type === "html") {
-          fetch(`/stream?path=${encodeURIComponent(path)}`)
-            .then((response) => response.text())
-            .then((html) => {
-              modalPreview.innerHTML = `<iframe srcdoc="${encodeURIComponent(html)}" width="100%" height="600px"></iframe>`;
-            });
-        } else if (type === "text" || type === "code") {
-          fetch(`/stream?path=${encodeURIComponent(path)}`)
-            .then((response) => response.text())
-            .then((text) => {
-              modalPreview.innerHTML = `<pre>${text}</pre>`;
-            });
-        } else {
-          modalPreview.innerHTML = "Preview not available";
-        }
-
-        document.getElementById("modal").style.display = "block";
-      }
-      function navigateFile(direction) {
-        fetch(
-          `/get_adjacent_file?path=${encodeURIComponent(currentFilePath)}&direction=${direction}`,
-        )
-          .then((response) => response.json())
-          .then((data) => {
-            showFilePreview(data.path, data.type);
-          });
-      }
-      function updateFileList(data) {
-        const fileList = document.getElementById("file-list");
-        fileList.innerHTML = "";
-
-        data.forEach((item) => {
-          const fileItem = document.createElement("div");
-          fileItem.className = "file-item";
-          const icon = item.is_dir ? "fa-folder" : getFileIcon(item.type);
-
-          let thumbnailHtml = `<div class="file-icon"><i class="fas ${icon}"></i></div>`;
-          if (item.type === "image") {
-            thumbnailHtml = `<div class="file-thumbnail"><img src="/thumbnail?path=${encodeURIComponent(item.path)}" alt="${item.name}"></div>`;
-          }
-
-          fileItem.innerHTML = `
-      ${thumbnailHtml}
-      <div class="file-name">${item.name}</div>
-    `;
-
-          if (item.is_dir) {
-            fileItem.onclick = () => loadFiles(item.path);
-          } else {
-            fileItem.onclick = () => toggleFilePreview(item.path, item.type);
-          }
-
-          fileList.appendChild(fileItem);
-        });
-      }
-      function toggleFilePreview(path, type) {
-        currentFilePath = path;
-        showFilePreview(path, type);
-      }
-      function closeModal() {
-        document.getElementById("modal").style.display = "none";
-      }
-
-      // Close modal when clicking on the close button or outside the modal
-      window.addEventListener("load", () => {
-        const modal = document.getElementById("modal");
-        const closeBtn = document.querySelector(".close");
-
-        closeBtn.onclick = closeModal;
-
-        window.onclick = (event) => {
-          if (event.target === modal) {
-            closeModal();
-          }
-        };
-      });
-
-      function getFileIcon(type) {
-        switch (type) {
-          case "video":
-            return "fa-file-video";
-          case "image":
-            return "fa-file-image";
-          case "pdf":
-            return "fa-file-pdf";
-          case "html":
-            return "fa-file-code";
-          case "text":
-            return "fa-file-alt";
-          case "code":
-            return "fa-file-code";
-          default:
-            return "fa-file";
-        }
-      }
-
-      function toggleTheme() {
-        const currentTheme =
-          document.documentElement.getAttribute("data-theme");
-        const newTheme = currentTheme === "dark" ? "light" : "dark";
-        document.documentElement.setAttribute("data-theme", newTheme);
-        localStorage.setItem("theme", newTheme);
-        updateThemeIcon();
-      }
-
-      function updateThemeIcon() {
-        const themeIcon = document.querySelector(".toggle-theme i");
-        const currentTheme =
-          document.documentElement.getAttribute("data-theme");
-        themeIcon.className =
-          currentTheme === "dark" ? "fas fa-sun" : "fas fa-moon";
-      }
-
-      window.addEventListener("load", () => {
-        const savedTheme = localStorage.getItem("theme") || "light";
-        document.documentElement.setAttribute("data-theme", savedTheme);
-        updateThemeIcon();
-        loadFiles();
-      });
-
-      // Maintain scroll position
-      window.addEventListener("beforeunload", () => {
-        localStorage.setItem("scrollPosition", window.scrollY);
-      });
-
-      window.addEventListener("load", () => {
-        const scrollPosition = localStorage.getItem("scrollPosition");
-        if (scrollPosition) {
-          window.scrollTo(0, parseInt(scrollPosition, 10));
-        }
-      });
-
-      window.addEventListener("load", () => {
-        showLoginModal();
-      });
-    </script>
+    <script type="module" src="{{ url_for('static', filename='js/main.js') }}"></script>
   </body>
 </html>

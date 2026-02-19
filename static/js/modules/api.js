@@ -1,0 +1,58 @@
+import { normalizePath } from "./utils.js";
+
+export function createApiClient({ onUnauthorized }) {
+  async function fetchJson(url) {
+    const response = await fetch(url);
+    if (response.status === 401) {
+      onUnauthorized?.();
+      return null;
+    }
+
+    if (!response.ok) {
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const payload = await response.json();
+        throw new Error(payload.error || `Request failed (${response.status})`);
+      }
+      throw new Error(`Request failed (${response.status})`);
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      throw new Error("Unexpected response from server");
+    }
+    return response.json();
+  }
+
+  async function listFiles(path = "") {
+    const safePath = normalizePath(path);
+    return fetchJson(`/list?path=${encodeURIComponent(safePath)}`);
+  }
+
+  async function searchFiles({
+    path = "",
+    query = "",
+    recursive = true,
+    maxResults = 200,
+  }) {
+    const safePath = normalizePath(path);
+    const safeQuery = String(query ?? "").trim();
+    return fetchJson(
+      `/search?path=${encodeURIComponent(safePath)}&q=${encodeURIComponent(safeQuery)}&recursive=${recursive ? "1" : "0"}&max=${encodeURIComponent(String(maxResults))}`,
+    );
+  }
+
+  async function getAdjacentFile(path, direction) {
+    const safePath = normalizePath(path);
+    const safeDirection = direction === "prev" ? "prev" : "next";
+    return fetchJson(
+      `/get_adjacent_file?path=${encodeURIComponent(safePath)}&direction=${encodeURIComponent(safeDirection)}`,
+    );
+  }
+
+  return {
+    listFiles,
+    searchFiles,
+    getAdjacentFile,
+  };
+}
