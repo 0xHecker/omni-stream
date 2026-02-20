@@ -103,7 +103,7 @@ User selects remote hub B
   -> explorer calls proceed against hub B
 ```
 
-PIN rotation or remote session expiry:
+PIN rotation or remote session expiry::
 
 ```text
 Remote returns auth failure (401 or redirect to /login)
