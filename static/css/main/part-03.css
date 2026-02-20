@@ -1,0 +1,501 @@
+.transfer-role-tabs {
+  display: inline-flex;
+  gap: 0.2rem;
+  background: color-mix(in srgb, var(--surface-soft) 80%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.25rem;
+}
+
+.transfer-role {
+  background: transparent;
+  color: var(--text-muted);
+  border: transparent;
+  border-radius: 999px;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+
+.transfer-role:hover:not(.active) {
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+}
+
+.transfer-role.active {
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  color: #fff;
+  box-shadow: 0 4px 12px var(--accent-soft);
+}
+
+.transfer-items {
+  margin: 0.28rem 0 0;
+  padding-left: 1rem;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.transfer-actions {
+  margin-top: 0.38rem;
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.transfer-actions input {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0.28rem 0.54rem;
+  width: 110px;
+}
+
+.transfer-actions button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 0.3rem 0.58rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.transfer-actions button:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.transfer-actions a {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  border-radius: 999px;
+  padding: 0.3rem 0.58rem;
+  font-size: 0.72rem;
+}
+
+.transfer-actions a:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.network-refresh:focus-visible,
+.action-row button:focus-visible,
+.transfer-role:focus-visible,
+.transfer-actions button:focus-visible,
+.transfer-actions a:focus-visible,
+.field input:focus-visible,
+.field select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 65%, #fff);
+  outline-offset: 1px;
+}
+
+.job-progress {
+  margin-top: 0.4rem;
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--surface-soft) 85%, transparent);
+  border: 1px solid var(--border);
+}
+
+.job-progress > span {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+  box-shadow: 0 0 10px var(--accent-soft);
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+}
+
+.job-progress > span::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  right: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
+  animation: pulseProgress 1.5s infinite;
+}
+
+@keyframes pulseProgress {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(10, 19, 25, 0.72);
+  display: grid;
+  place-items: center;
+  padding: max(0.8rem, env(safe-area-inset-top)) max(0.8rem, env(safe-area-inset-right))
+    max(0.8rem, env(safe-area-inset-bottom)) max(0.8rem, env(safe-area-inset-left));
+  overscroll-behavior: contain;
+  animation: fadeIn 0.2s ease;
+}
+
+.modal-content {
+  width: min(1080px, 100%);
+  max-height: min(92vh, 100dvh - 1.2rem);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--surface);
+  box-shadow: var(--shadow-elevated);
+  padding: 0.85rem;
+  position: relative;
+  -webkit-overflow-scrolling: touch;
+  animation: cardIn 0.3s ease both;
+}
+
+.modal-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  background: var(--surface);
+  padding-bottom: 0.55rem;
+  border-bottom: 1px dashed color-mix(in srgb, var(--border) 60%, transparent);
+  margin-bottom: 0.8rem;
+}
+
+.network-foot {
+  margin-top: 0.72rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.network-info-modal-content {
+  width: min(820px, 100%);
+}
+
+.network-info-title-wrap {
+  min-width: 0;
+}
+
+.network-info-title {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--accent-strong);
+}
+
+.network-info-subtitle {
+  margin: 0.18rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.network-info-grid {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.incoming-transfer-modal-content {
+  width: min(720px, 100%);
+}
+
+.incoming-transfer-body {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.incoming-transfer-note {
+  margin: 0;
+}
+
+.incoming-destination-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.incoming-transfer-actions {
+  justify-content: flex-end;
+}
+
+.preview-modal-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  padding-left: 0.4rem;
+}
+
+.preview-info-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preview-info-meta {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 0.2rem;
+}
+
+.download-btn {
+  border-radius: 999px;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.42rem 0.78rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  background: var(--surface-soft);
+}
+
+.download-btn:hover {
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 4px 12px var(--accent-soft);
+  transform: translateY(-1px);
+}
+
+.close-btn {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.close-btn:hover {
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.modal-nav {
+  position: fixed;
+  inset-inline: 1.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  justify-content: space-between;
+  pointer-events: none;
+  z-index: 99;
+}
+
+.nav-btn {
+  pointer-events: auto;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 999px;
+  cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.nav-btn:hover {
+  background: var(--surface-elevated);
+  transform: scale(1.05);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.modal-preview {
+  margin-top: 0.35rem;
+  display: grid;
+  place-items: center;
+  width: 100%;
+}
+
+.modal-preview.pdf-mode {
+  align-items: stretch;
+}
+
+.modal-preview video,
+.modal-preview img,
+.modal-preview embed,
+.modal-preview iframe {
+  width: 100%;
+  max-height: 76vh;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  object-fit: contain;
+  background: color-mix(in srgb, var(--surface-soft) 75%, #000);
+}
+
+.modal-preview pre {
+  width: 100%;
+  max-height: 75vh;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-soft) 70%, transparent);
+  padding: 0.96rem;
+  font-family: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
+  font-size: 0.84rem;
+}
+
+.preview-tabs {
+  width: 100%;
+  display: flex;
+  gap: 0.42rem;
+  flex-wrap: wrap;
+  padding: 0.34rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-soft) 55%, transparent);
+  margin-bottom: 0.62rem;
+}
+
+.preview-tab,
+.sheet-tab,
+.code-btn,
+.pdf-btn {
+  border-radius: 999px;
+  font-size: 0.76rem;
+  padding: 0.35rem 0.66rem;
+  cursor: pointer;
+}
+
+.preview-tab.active,
+.sheet-tab.active {
+  background: linear-gradient(125deg, var(--accent), var(--accent-strong));
+  color: #fff;
+  border-color: transparent;
+}
+
+.preview-pane {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  min-height: 14rem;
+}
+
+.preview-pane.hidden {
+  display: none !important;
+}
+
+.code-shell {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.code-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-soft) 58%, transparent);
+}
+
+.code-title {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.code-toolbar-actions {
+  display: flex;
+  gap: 0.38rem;
+}
+
+.code-btn:hover,
+.preview-tab:hover,
+.sheet-tab:hover,
+.pdf-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.code-surface {
+  width: 100%;
+  max-height: 72vh;
+  overflow: auto;
+  margin: 0;
+  background: #0f1820;
+}
+
+.code-surface code {
+  display: block;
+  min-height: 100%;
+  padding: 1rem 1.02rem;
+  font-family: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
+  font-size: 0.84rem;
+  line-height: 1.52;
+}
+
+.code-surface.wrap code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.markdown-render {
+  padding: 0.95rem 0.95rem 1.1rem;
+  line-height: 1.6;
+}
+
+.markdown-render :first-child {
+  margin-top: 0;
+}
+
+.markdown-render :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-render h1,
+.markdown-render h2,
+.markdown-render h3,
+.markdown-render h4 {
+  margin-top: 1.15rem;
+  margin-bottom: 0.6rem;
+  line-height: 1.25;
+}
+
+.markdown-render p,
+.markdown-render ul,
+.markdown-render ol,
+.markdown-render blockquote {
+  margin-top: 0.58rem;
+  margin-bottom: 0.58rem;
+}
+
