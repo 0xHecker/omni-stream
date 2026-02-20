@@ -2,13 +2,22 @@ const PERSISTED_PROFILE_KEY = "network_coordinator_profile_v2";
 const RUNTIME_SESSION_KEY = "network_runtime_session_v2";
 const UNKNOWN_SHA256 = "0".repeat(64);
 const UPLOAD_CHUNK_BYTES = 1024 * 1024;
-const DEVICE_REFRESH_INTERVAL_MS = 30000;
-const HIDDEN_DEVICE_REFRESH_INTERVAL_MS = 120000;
-const TRANSFER_BACKUP_REFRESH_INTERVAL_MS = 180000;
+const MAX_TRANSFER_ITEMS_PER_REQUEST = 200;
+const DEVICE_REFRESH_INTERVAL_MS = 10000;
+const HIDDEN_DEVICE_REFRESH_INTERVAL_MS = 60000;
+const TRANSFER_BACKUP_REFRESH_INTERVAL_MS = 10000;
 const WS_PING_INTERVAL_MS = 20000;
 const WS_RECONNECT_MAX_DELAY_MS = 12000;
 const REMOTE_LIST_MAX_RESULTS = 300;
 const REMOTE_SEARCH_MAX_RESULTS = 300;
+const COORDINATOR_PROBE_TIMEOUT_MS = 1200;
+const COORDINATOR_REQUEST_TIMEOUT_MS = 12000;
+const AGENT_REQUEST_TIMEOUT_MS = 15000;
+const DISCOVERY_CACHE_TTL_MS = 15000;
+const RECOVERY_MIN_INTERVAL_MS = 10000;
+const MAX_COORDINATOR_CANDIDATES = 16;
+const MAX_REFRESH_FAILURES = 3;
+const MAX_WS_RECONNECT_ATTEMPTS_BEFORE_RECOVERY = 4;
 
 function sleep(milliseconds) {
   return new Promise((resolve) => {
@@ -73,13 +82,59 @@ function bytesToLabel(bytes) {
   return `${value.toFixed(value >= 100 || index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
-function sha256Hex(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let out = "";
-  for (const value of bytes) {
-    out += value.toString(16).padStart(2, "0");
+function randomPasscode() {
+  return String(Math.floor(Math.random() * 9000) + 1000);
+}
+
+function parseTransferPreferences(transfer) {
+  const fallback = {
+    destinationPath: "",
+    autoPasscode: "",
+  };
+  const raw = String(transfer?.reason || "").trim();
+  if (!raw) {
+    return fallback;
   }
-  return out;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return fallback;
+    }
+    if (String(parsed.kind || "") !== "receiver_preferences") {
+      return fallback;
+    }
+    return {
+      destinationPath: String(parsed.destination_path || "").trim(),
+      autoPasscode: String(parsed.auto_passcode || "").trim(),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeFsPath(pathValue) {
+  return String(pathValue || "")
+    .trim()
+    .replaceAll("\\", "/")
+    .replace(/\/+$/, "");
+}
+
+function toShareRelativePath(shareRootPath, selectedPath) {
+  const rootRaw = normalizeFsPath(shareRootPath);
+  const targetRaw = normalizeFsPath(selectedPath);
+  if (!rootRaw || !targetRaw) {
+    return null;
+  }
+
+  const rootLower = rootRaw.toLowerCase();
+  const targetLower = targetRaw.toLowerCase();
+  if (targetLower === rootLower) {
+    return "";
+  }
+  if (!targetLower.startsWith(`${rootLower}/`)) {
+    return null;
+  }
+  return targetRaw.slice(rootRaw.length + 1);
 }
 
 function defaultSession() {
@@ -96,6 +151,8 @@ export function createNetworkController({
   elements,
   onStatus,
 }) {
+  const transferRoleButtons = Array.isArray(elements.transferRoleButtons) ? elements.transferRoleButtons : [];
+
   const state = {
     session: defaultSession(),
     devices: [],
@@ -116,7 +173,75 @@ export function createNetworkController({
     wsReconnectAttempts: 0,
     wsManualClose: false,
     wsPingTimer: null,
+    quickSendQueued: false,
+    recoverPromise: null,
+    consecutiveRefreshFailures: 0,
+    lastRecoveryAttemptAt: 0,
+    coordinatorCandidates: [],
+    lastDiscoveryAt: 0,
+    shareRootById: new Map(),
+    incomingModalTransferId: "",
+    incomingModalQueued: [],
+    incomingDismissedTransferIds: new Set(),
+    autoUploadOpenedTransferIds: new Set(),
   };
+
+  function getDefaultDatasetValue(key) {
+    return String(elements.networkRoot?.dataset?.[key] || "").trim();
+  }
+
+  function getInputValue(inputElement, fallback = "") {
+    if (!inputElement) {
+      return String(fallback || "").trim();
+    }
+    const value = String(inputElement.value || "").trim();
+    return value || String(fallback || "").trim();
+  }
+
+  function setInputValue(inputElement, value) {
+    if (inputElement) {
+      inputElement.value = value;
+    }
+  }
+
+  function uniqueNormalizedUrls(values) {
+    const output = [];
+    const seen = new Set();
+    for (const rawValue of values || []) {
+      const normalized = normalizeBaseUrl(rawValue);
+      if (!normalized || seen.has(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      output.push(normalized);
+      if (output.length >= MAX_COORDINATOR_CANDIDATES) {
+        break;
+      }
+    }
+    return output;
+  }
+
+  function currentIdentitySnapshot() {
+    return {
+      principalId: String(state.session.principalId || "").trim(),
+      clientDeviceId: String(state.session.clientDeviceId || "").trim(),
+      deviceSecret: String(state.session.deviceSecret || "").trim(),
+    };
+  }
+
+  function hasIdentity(snapshot) {
+    return Boolean(snapshot?.principalId && snapshot?.clientDeviceId && snapshot?.deviceSecret);
+  }
+
+  function restoreIdentity(snapshot) {
+    state.session.principalId = String(snapshot?.principalId || "").trim();
+    state.session.clientDeviceId = String(snapshot?.clientDeviceId || "").trim();
+    state.session.deviceSecret = String(snapshot?.deviceSecret || "").trim();
+  }
+
+  function shouldAttemptRecovery() {
+    return Date.now() - state.lastRecoveryAttemptAt >= RECOVERY_MIN_INTERVAL_MS;
+  }
 
   function loadSessionFromStorage() {
     state.session = defaultSession();
@@ -142,6 +267,31 @@ export function createNetworkController({
         sessionStorage.removeItem(RUNTIME_SESSION_KEY);
       }
     }
+
+    if (!state.session.baseUrl) {
+      const defaultCoordinatorUrl = normalizeBaseUrl(
+        elements.coordUrl?.dataset.defaultUrl || getDefaultDatasetValue("defaultCoordinatorUrl"),
+      );
+      if (defaultCoordinatorUrl) {
+        state.session.baseUrl = defaultCoordinatorUrl;
+      }
+    }
+
+    if (!state.session.principalId) {
+      state.session.principalId = String(
+        elements.principalId?.dataset.defaultValue || getDefaultDatasetValue("defaultPrincipalId"),
+      ).trim();
+    }
+    if (!state.session.clientDeviceId) {
+      state.session.clientDeviceId = String(
+        elements.clientDeviceId?.dataset.defaultValue || getDefaultDatasetValue("defaultClientDeviceId"),
+      ).trim();
+    }
+    if (!state.session.deviceSecret) {
+      state.session.deviceSecret = String(
+        elements.deviceSecret?.dataset.defaultValue || getDefaultDatasetValue("defaultDeviceSecret"),
+      ).trim();
+    }
   }
 
   function saveSessionProfile() {
@@ -166,20 +316,35 @@ export function createNetworkController({
   }
 
   function syncSessionForm() {
-    elements.coordUrl.value = state.session.baseUrl;
-    elements.principalId.value = state.session.principalId;
-    elements.clientDeviceId.value = state.session.clientDeviceId;
-    elements.deviceSecret.value = state.session.deviceSecret;
+    setInputValue(elements.coordUrl, state.session.baseUrl);
+    setInputValue(elements.principalId, state.session.principalId);
+    setInputValue(elements.clientDeviceId, state.session.clientDeviceId);
+    setInputValue(elements.deviceSecret, state.session.deviceSecret);
   }
 
   function readSessionForm() {
-    state.session.baseUrl = normalizeBaseUrl(elements.coordUrl.value);
-    state.session.principalId = String(elements.principalId.value || "").trim();
-    state.session.clientDeviceId = String(elements.clientDeviceId.value || "").trim();
-    state.session.deviceSecret = String(elements.deviceSecret.value || "").trim();
+    state.session.baseUrl = normalizeBaseUrl(getInputValue(
+      elements.coordUrl,
+      state.session.baseUrl || getDefaultDatasetValue("defaultCoordinatorUrl"),
+    ));
+    state.session.principalId = getInputValue(
+      elements.principalId,
+      state.session.principalId || getDefaultDatasetValue("defaultPrincipalId"),
+    );
+    state.session.clientDeviceId = getInputValue(
+      elements.clientDeviceId,
+      state.session.clientDeviceId || getDefaultDatasetValue("defaultClientDeviceId"),
+    );
+    state.session.deviceSecret = getInputValue(
+      elements.deviceSecret,
+      state.session.deviceSecret || getDefaultDatasetValue("defaultDeviceSecret"),
+    );
   }
 
   function setSessionStatus(message, kind = "neutral") {
+    if (!elements.sessionStatus) {
+      return;
+    }
     elements.sessionStatus.textContent = message;
     elements.sessionStatus.classList.remove("error", "success");
     if (kind === "error") {
@@ -190,6 +355,10 @@ export function createNetworkController({
   }
 
   function setPairingStatus(message, kind = "neutral") {
+    if (!elements.pairingStatus) {
+      setSessionStatus(message, kind);
+      return;
+    }
     elements.pairingStatus.textContent = message;
     elements.pairingStatus.classList.remove("error", "success");
     if (kind === "error") {
@@ -199,7 +368,29 @@ export function createNetworkController({
     }
   }
 
-  async function requestJson(path, { method = "GET", body, auth = true } = {}) {
+  function coordinatorErrorMessage(responseStatus, payload) {
+    if (payload && typeof payload === "object") {
+      const detail = payload.detail;
+      if (typeof detail === "string" && detail.trim()) {
+        return detail.trim();
+      }
+      if (Array.isArray(detail) && detail.length) {
+        const first = detail[0];
+        if (first && typeof first === "object") {
+          const loc = Array.isArray(first.loc) ? first.loc.join(".") : "";
+          const msg = String(first.msg || "Validation error");
+          return loc ? `${loc}: ${msg}` : msg;
+        }
+        return String(detail[0] || "Validation error");
+      }
+      if (typeof payload.error === "string" && payload.error.trim()) {
+        return payload.error.trim();
+      }
+    }
+    return `Request failed (${responseStatus})`;
+  }
+
+  async function requestJson(path, { method = "GET", body, auth = true, timeoutMs } = {}) {
     if (!state.session.baseUrl) {
       throw new Error("Coordinator URL is required");
     }
@@ -216,11 +407,25 @@ export function createNetworkController({
       headers.authorization = `Bearer ${state.session.accessToken}`;
     }
 
-    const response = await fetch(`${state.session.baseUrl}${path}`, {
-      method,
-      headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    const controller = new AbortController();
+    const requestTimeout = Number(timeoutMs) > 0 ? Number(timeoutMs) : COORDINATOR_REQUEST_TIMEOUT_MS;
+    const timeout = window.setTimeout(() => controller.abort(), requestTimeout);
+    let response;
+    try {
+      response = await fetch(`${state.session.baseUrl}${path}`, {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw new Error("Coordinator request timed out");
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+    }
 
     const contentType = response.headers.get("content-type") || "";
     const isJson = contentType.includes("application/json");
@@ -230,10 +435,10 @@ export function createNetworkController({
         state.session.accessToken = "";
         closeEventsSocket({ allowReconnect: false });
       }
-      throw new Error((payload && (payload.detail || payload.error)) || "Coordinator authentication failed");
+      throw new Error(coordinatorErrorMessage(response.status, payload) || "Coordinator authentication failed");
     }
     if (!response.ok) {
-      throw new Error((payload && (payload.detail || payload.error)) || `Request failed (${response.status})`);
+      throw new Error(coordinatorErrorMessage(response.status, payload));
     }
     if (!payload) {
       throw new Error("Unexpected coordinator response");
@@ -268,19 +473,18 @@ export function createNetworkController({
     setSessionStatus("Connected", "success");
   }
 
-  async function bootstrapOrStartPairing() {
+  async function bootstrapOrStartPairing({ autoJoin = false } = {}) {
     readSessionForm();
     if (!state.session.baseUrl) {
       throw new Error("Coordinator URL is invalid");
     }
 
-    const displayName = String(elements.pairDisplayName.value || "").trim();
-    const deviceName = String(elements.pairDeviceName.value || "").trim();
-    if (!displayName || !deviceName) {
-      throw new Error("Display name and device name are required");
-    }
+    const fallbackLabel = (window.navigator?.platform || "LAN Device").slice(0, 60);
+    const displayName = String(elements.pairDisplayName?.value || "").trim() || fallbackLabel;
+    const deviceName = String(elements.pairDeviceName?.value || "").trim() || fallbackLabel;
+    const query = autoJoin ? "?auto_join=1" : "";
 
-    const payload = await requestJson("/api/v1/pairing/start", {
+    const payload = await requestJson(`/api/v1/pairing/start${query}`, {
       method: "POST",
       auth: false,
       body: {
@@ -299,19 +503,78 @@ export function createNetworkController({
       saveSessionProfile();
       saveRuntimeSession();
       syncSessionForm();
-      setPairingStatus("Bootstrap complete. Credentials saved.", "success");
+      setPairingStatus(autoJoin ? "Auto-join complete." : "Bootstrap complete. Credentials saved.", "success");
       setSessionStatus("Connected", "success");
       return;
     }
 
-    elements.pairPendingId.value = payload.pending_pairing_id || "";
-    elements.pairCode.value = payload.pairing_code || "";
+    if (elements.pairPendingId) {
+      elements.pairPendingId.value = payload.pending_pairing_id || "";
+    }
+    if (elements.pairCode) {
+      elements.pairCode.value = payload.pairing_code || "";
+    }
     setPairingStatus("Pairing request created. Share ID/code with trusted session.", "success");
   }
 
+  async function probeCoordinatorBaseUrl(baseUrl) {
+    const normalized = normalizeBaseUrl(baseUrl);
+    if (!normalized) {
+      return false;
+    }
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), COORDINATOR_PROBE_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${normalized}/`, {
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        return false;
+      }
+      const payload = await response.json();
+      return Boolean(payload && typeof payload === "object" && String(payload.service || "").toLowerCase() === "coordinator");
+    } catch {
+      return false;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  async function discoverCoordinatorBaseUrls({ force = false } = {}) {
+    const cachedCandidates = uniqueNormalizedUrls([
+      state.session.baseUrl,
+      getDefaultDatasetValue("defaultCoordinatorUrl"),
+      ...state.coordinatorCandidates,
+    ]);
+    if (!force && cachedCandidates.length && Date.now() - state.lastDiscoveryAt < DISCOVERY_CACHE_TTL_MS) {
+      return cachedCandidates;
+    }
+
+    let discoveredCandidates = state.coordinatorCandidates;
+    try {
+      const response = await fetch("/api/discovery/coordinators", { headers: { Accept: "application/json" } });
+      if (response.ok) {
+        const payload = await response.json();
+        const coordinators = Array.isArray(payload?.coordinators) ? payload.coordinators : [];
+        discoveredCandidates = uniqueNormalizedUrls(coordinators);
+      }
+    } catch {
+      // Keep cached candidates when discovery endpoint is unavailable.
+    }
+
+    state.lastDiscoveryAt = Date.now();
+    state.coordinatorCandidates = discoveredCandidates;
+    return uniqueNormalizedUrls([
+      state.session.baseUrl,
+      getDefaultDatasetValue("defaultCoordinatorUrl"),
+      ...discoveredCandidates,
+    ]);
+  }
+
   async function confirmPairing() {
-    const pendingId = String(elements.pairPendingId.value || "").trim();
-    const pairingCode = String(elements.pairCode.value || "").trim();
+    const pendingId = String(elements.pairPendingId?.value || "").trim();
+    const pairingCode = String(elements.pairCode?.value || "").trim();
     if (!pendingId || !pairingCode) {
       throw new Error("Pending pairing ID and pairing code are required");
     }
@@ -364,7 +627,7 @@ export function createNetworkController({
     renderSendShareOptions();
 
     const selectionChanged = previousDeviceId !== state.selectedDeviceId || previousShareId !== state.selectedShareId;
-    if (selectionChanged && state.selectedDeviceId && state.selectedShareId) {
+    if (selectionChanged && state.selectedDeviceId && state.selectedShareId && elements.remoteList) {
       try {
         await loadRemoteDirectory("");
       } catch {
@@ -374,10 +637,34 @@ export function createNetworkController({
   }
 
   async function refreshTransfers() {
-    const payload = await requestJson(`/api/v1/transfers?role=${encodeURIComponent(state.transferRole)}`);
+    const payload = await requestJson("/api/v1/transfers?role=all");
     state.transfers = payload.transfers || [];
+    const terminalStates = new Set(["completed", "rejected", "expired", "failed", "cancelled"]);
+    for (const transfer of state.transfers) {
+      if (terminalStates.has(String(transfer.state || ""))) {
+        state.autoUploadOpenedTransferIds.delete(transfer.id);
+      }
+    }
     state.lastTransferRefreshAt = Date.now();
     renderTransferList();
+    maybeShowIncomingTransferModal();
+    maybeAutoOpenOutgoingUploads().catch(() => {
+      // Background auto-open failures should not block refresh updates.
+    });
+  }
+
+  async function cancelPendingTransfers() {
+    const payload = await requestJson("/api/v1/transfers/pending/cancel", { method: "POST" });
+    await refreshTransfers();
+    const cancelled = Number(payload?.cancelled || 0);
+    setSessionStatus(`Cancelled ${cancelled} pending transfer(s).`, "success");
+  }
+
+  async function clearTransferHistory() {
+    const payload = await requestJson("/api/v1/transfers/history/clear", { method: "POST" });
+    await refreshTransfers();
+    const deleted = Number(payload?.deleted || 0);
+    setSessionStatus(`Cleared ${deleted} transfer history item(s).`, "success");
   }
 
   async function refreshAll({ includeTransfers = false, force = false } = {}) {
@@ -419,6 +706,8 @@ export function createNetworkController({
       .map((device) => {
         const selected = device.id === state.selectedDeviceId;
         const isOwner = device.owner_principal_id === state.session.principalId;
+        const localAgentDeviceId = String(elements.networkRoot?.dataset?.localAgentDeviceId || "").trim();
+        const isLocalAgent = Boolean(localAgentDeviceId && device.id === localAgentDeviceId);
         const onlineClass = device.online ? "online" : "offline";
         const onlineText = device.online ? "Online" : "Offline";
         return `
@@ -427,8 +716,9 @@ export function createNetworkController({
               <p class="list-item-title">${escapeHtml(device.name)}</p>
               <span class="pill ${onlineClass}">${onlineText}</span>
             </div>
-            <p class="list-item-meta">${escapeHtml(device.id)}</p>
+            <p class="list-item-meta">${escapeHtml(device.id)}${isLocalAgent ? " • This device" : ""}</p>
             <div class="transfer-actions">
+              <button type="button" data-action="quick-send-device" data-device-id="${escapeHtml(device.id)}">Send Files</button>
               <button type="button" data-action="select-device" data-device-id="${escapeHtml(device.id)}">Select</button>
               ${
                 isOwner
@@ -586,23 +876,364 @@ export function createNetworkController({
     renderRemoteList(payload, query);
   }
 
+  function transferItemProgressWeight(itemState) {
+    const normalized = String(itemState || "").trim().toLowerCase();
+    if (!normalized || normalized === "pending") {
+      return 0;
+    }
+    if (normalized === "receiving") {
+      return 0.35;
+    }
+    if (normalized === "staged") {
+      return 0.7;
+    }
+    if (normalized === "committed") {
+      return 0.9;
+    }
+    if (normalized === "finalized" || normalized === "completed") {
+      return 1;
+    }
+    if (["rejected", "failed", "cancelled", "expired"].includes(normalized)) {
+      return 0;
+    }
+    return 0.1;
+  }
+
+  function transferProgressDetails(transfer) {
+    const items = Array.isArray(transfer?.items) ? transfer.items : [];
+    if (!items.length) {
+      return {
+        percent: 0,
+        label: "No file metadata",
+      };
+    }
+
+    let weightedProgress = 0;
+    let finalizedCount = 0;
+    let activeCount = 0;
+    for (const item of items) {
+      const itemState = String(item?.state || "").trim().toLowerCase();
+      weightedProgress += transferItemProgressWeight(itemState);
+      if (itemState === "finalized" || itemState === "completed") {
+        finalizedCount += 1;
+      }
+      if (itemState === "receiving" || itemState === "staged" || itemState === "committed") {
+        activeCount += 1;
+      }
+    }
+
+    const progress = Math.max(0, Math.min(1, weightedProgress / items.length));
+    const percent = Math.round(progress * 100);
+    let label = `${finalizedCount}/${items.length} file(s) finalized`;
+    if (activeCount > 0) {
+      label += ` • ${activeCount} active`;
+    }
+    if (finalizedCount === items.length) {
+      label = "All files finalized";
+    }
+    return { percent, label };
+  }
+
+  function describeTransferState(transfer, direction) {
+    const normalized = String(transfer?.state || "").trim().toLowerCase();
+    if (!normalized) {
+      return "Unknown";
+    }
+    if (normalized === "pending_receiver_approval") {
+      return direction === "incoming" ? "Awaiting your approval" : "Awaiting receiver approval";
+    }
+    if (normalized === "approved_pending_sender_passcode") {
+      return "Awaiting sender PIN";
+    }
+    if (normalized === "passcode_open") {
+      return "Ready to upload";
+    }
+    if (normalized === "in_progress") {
+      return "Transfer in progress";
+    }
+    if (normalized === "completed") {
+      return "Completed";
+    }
+    if (normalized === "rejected") {
+      return "Rejected";
+    }
+    if (normalized === "failed") {
+      return "Failed";
+    }
+    if (normalized === "cancelled") {
+      return "Cancelled";
+    }
+    if (normalized === "expired") {
+      return "Expired";
+    }
+    return normalized.replaceAll("_", " ");
+  }
+
+  function getTransferTargetDeviceLabel(transfer) {
+    const receiverDeviceId = String(transfer?.receiver_device_id || "").trim();
+    const receiverDevice = state.devices.find((item) => String(item?.id || "").trim() === receiverDeviceId);
+    const localAgentDeviceId = String(elements.networkRoot?.dataset?.localAgentDeviceId || "").trim();
+    const isLocalReceiver = Boolean(localAgentDeviceId && receiverDeviceId && receiverDeviceId === localAgentDeviceId);
+    const baseLabel = String(receiverDevice?.name || "").trim() || receiverDeviceId.slice(0, 8) || "Unknown device";
+    return `${baseLabel}${isLocalReceiver ? " • This device" : ""}`;
+  }
+
   function transferDirection(transfer) {
-    return transfer.sender_principal_id === state.session.principalId ? "outgoing" : "incoming";
+    const transferId = String(transfer?.id || "").trim();
+    if (transferId && (state.transferFiles.has(transferId) || state.uploadJobs.has(transferId))) {
+      return "outgoing";
+    }
+
+    const localAgentDeviceId = String(elements.networkRoot?.dataset?.localAgentDeviceId || "").trim();
+    const receiverDeviceId = String(transfer?.receiver_device_id || "").trim();
+    if (localAgentDeviceId && receiverDeviceId) {
+      return receiverDeviceId === localAgentDeviceId ? "incoming" : "outgoing";
+    }
+
+    if (String(transfer?.sender_principal_id || "").trim() === state.session.principalId) {
+      return "outgoing";
+    }
+    return "incoming";
+  }
+
+  function getPendingIncomingTransfers() {
+    return state.transfers.filter(
+      (transfer) =>
+        transferDirection(transfer) === "incoming"
+        && transfer.state === "pending_receiver_approval"
+        && !state.incomingDismissedTransferIds.has(transfer.id),
+    );
+  }
+
+  function getTransferById(transferId) {
+    return state.transfers.find((transfer) => transfer.id === transferId) || null;
+  }
+
+  function closeIncomingTransferModal({ dismiss = true } = {}) {
+    if (!elements.incomingTransferModal) {
+      return;
+    }
+    if (dismiss && state.incomingModalTransferId) {
+      state.incomingDismissedTransferIds.add(state.incomingModalTransferId);
+    }
+    state.incomingModalTransferId = "";
+    elements.incomingTransferModal.classList.add("hidden");
+  }
+
+  async function ensureShareRootPath(transfer) {
+    const shareId = String(transfer?.receiver_share_id || "").trim();
+    if (!shareId) {
+      return "";
+    }
+    if (state.shareRootById.has(shareId)) {
+      return String(state.shareRootById.get(shareId) || "");
+    }
+
+    let rootPath = "";
+    const existingShare = state.shares.find((share) => share.id === shareId);
+    if (existingShare && existingShare.root_path) {
+      rootPath = String(existingShare.root_path || "").trim();
+    }
+
+    if (!rootPath) {
+      try {
+        const payload = await requestJson(
+          `/api/v1/catalog/shares?device_id=${encodeURIComponent(String(transfer.receiver_device_id || ""))}`,
+        );
+        const shares = Array.isArray(payload?.shares) ? payload.shares : [];
+        for (const share of shares) {
+          const id = String(share.id || "").trim();
+          if (!id) {
+            continue;
+          }
+          const candidateRoot = String(share.root_path || "").trim();
+          state.shareRootById.set(id, candidateRoot);
+        }
+        rootPath = String(state.shareRootById.get(shareId) || "");
+      } catch {
+        rootPath = "";
+      }
+    }
+
+    state.shareRootById.set(shareId, rootPath);
+    return rootPath;
+  }
+
+  async function browseIncomingDestinationFolder() {
+    const transfer = getTransferById(state.incomingModalTransferId);
+    if (!transfer) {
+      throw new Error("Incoming transfer is no longer available");
+    }
+    const shareRootPath = await ensureShareRootPath(transfer);
+    if (!shareRootPath) {
+      throw new Error("Folder picker is available only for the owner of this shared folder");
+    }
+
+    const response = await fetch("/api/choose_folder", { headers: { Accept: "application/json" } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(String(payload?.error || "Unable to open folder picker"));
+    }
+    const selectedPath = String(payload?.path || "").trim();
+    if (!selectedPath) {
+      return;
+    }
+    const relativePath = toShareRelativePath(shareRootPath, selectedPath);
+    if (relativePath === null) {
+      throw new Error("Choose a folder inside the receiver shared root");
+    }
+    if (elements.incomingTransferDestination) {
+      elements.incomingTransferDestination.value = relativePath;
+    }
+  }
+
+  function openIncomingTransferModal(transfer) {
+    if (!elements.incomingTransferModal) {
+      return;
+    }
+    state.incomingModalTransferId = transfer.id;
+
+    const targetDeviceLabel = getTransferTargetDeviceLabel(transfer);
+    const totalBytes = (transfer.items || []).reduce((sum, item) => sum + Number(item.size || 0), 0);
+    if (elements.incomingTransferSummary) {
+      elements.incomingTransferSummary.textContent = `${transfer.items.length} file(s) pending • ${bytesToLabel(totalBytes)} total • Target: ${targetDeviceLabel}`;
+    }
+    if (elements.incomingTransferFiles) {
+      const fileRows = (transfer.items || [])
+        .map((item) => `<div class="list-item"><p class="list-item-title">${escapeHtml(item.filename)}</p><p class="list-item-meta">${bytesToLabel(Number(item.size || 0))}</p></div>`)
+        .join("");
+      elements.incomingTransferFiles.innerHTML = fileRows || `<div class="list-item"><p class="list-item-meta">No file metadata.</p></div>`;
+    }
+    if (elements.incomingTransferPasscode) {
+      const preferences = parseTransferPreferences(transfer);
+      elements.incomingTransferPasscode.value = /^\d{4}$/.test(preferences.autoPasscode)
+        ? preferences.autoPasscode
+        : randomPasscode();
+    }
+    if (elements.incomingTransferDestination) {
+      const preferences = parseTransferPreferences(transfer);
+      elements.incomingTransferDestination.value = String(preferences.destinationPath || "").trim();
+    }
+
+    elements.incomingTransferModal.classList.remove("hidden");
+  }
+
+  function maybeShowIncomingTransferModal() {
+    if (!elements.incomingTransferModal || !state.session.accessToken) {
+      return;
+    }
+    if (state.incomingModalTransferId) {
+      const active = getTransferById(state.incomingModalTransferId);
+      if (
+        active
+        && transferDirection(active) === "incoming"
+        && String(active.state || "") === "pending_receiver_approval"
+      ) {
+        return;
+      }
+      closeIncomingTransferModal({ dismiss: false });
+    }
+
+    const pending = getPendingIncomingTransfers();
+    state.incomingModalQueued = pending.map((transfer) => transfer.id);
+    if (!pending.length) {
+      return;
+    }
+    openIncomingTransferModal(pending[0]);
+  }
+
+  async function maybeAutoOpenOutgoingUploads() {
+    for (const transfer of state.transfers) {
+      if (transferDirection(transfer) !== "outgoing") {
+        continue;
+      }
+      if (!["approved_pending_sender_passcode", "passcode_open"].includes(String(transfer.state || ""))) {
+        continue;
+      }
+      if (!state.transferFiles.has(transfer.id) || state.uploadJobs.has(transfer.id)) {
+        continue;
+      }
+      if (state.autoUploadOpenedTransferIds.has(transfer.id)) {
+        continue;
+      }
+      const preferences = parseTransferPreferences(transfer);
+      if (!/^\d{4}$/.test(preferences.autoPasscode)) {
+        continue;
+      }
+
+      state.autoUploadOpenedTransferIds.add(transfer.id);
+      try {
+        const openPayload = await openUploadWindow(transfer.id, preferences.autoPasscode);
+        await processUploadJob(transfer, openPayload);
+      } catch {
+        state.autoUploadOpenedTransferIds.delete(transfer.id);
+      }
+    }
+  }
+
+  async function approveIncomingTransferFromModal() {
+    const transfer = getTransferById(state.incomingModalTransferId);
+    if (!transfer) {
+      throw new Error("Incoming transfer is no longer available");
+    }
+
+    const rawPasscode = String(elements.incomingTransferPasscode?.value || "").trim();
+    const passcode = /^\d{4}$/.test(rawPasscode) ? rawPasscode : randomPasscode();
+    const destinationPath = String(elements.incomingTransferDestination?.value || "").trim();
+
+    await requestJson(`/api/v1/transfers/${encodeURIComponent(transfer.id)}/approve`, {
+      method: "POST",
+      body: {
+        passcode,
+        destination_path: destinationPath,
+      },
+    });
+    state.incomingDismissedTransferIds.add(transfer.id);
+    closeIncomingTransferModal({ dismiss: false });
+    await refreshTransfers();
+  }
+
+  async function rejectIncomingTransferFromModal() {
+    const transfer = getTransferById(state.incomingModalTransferId);
+    if (!transfer) {
+      throw new Error("Incoming transfer is no longer available");
+    }
+    await requestJson(`/api/v1/transfers/${encodeURIComponent(transfer.id)}/reject`, {
+      method: "POST",
+      body: { reason: "Rejected by receiver" },
+    });
+    state.incomingDismissedTransferIds.add(transfer.id);
+    closeIncomingTransferModal({ dismiss: false });
+    await refreshTransfers();
   }
 
   function renderTransferList() {
     if (!elements.transferList) {
       return;
     }
-    if (!state.transfers.length) {
+    const visibleTransfers = state.transfers.filter((transfer) => {
+      const direction = transferDirection(transfer);
+      if (state.transferRole === "incoming") {
+        return direction === "incoming";
+      }
+      if (state.transferRole === "outgoing") {
+        return direction === "outgoing";
+      }
+      return true;
+    });
+    if (!visibleTransfers.length) {
       elements.transferList.innerHTML = `<div class="list-item"><p class="list-item-meta">No transfers for this filter.</p></div>`;
       return;
     }
 
-    const html = state.transfers
+    const html = visibleTransfers
       .map((transfer) => {
         const direction = transferDirection(transfer);
         const job = state.uploadJobs.get(transfer.id);
+        const preferences = parseTransferPreferences(transfer);
+        const stateLabel = describeTransferState(transfer, direction);
+        const targetDeviceLabel = getTransferTargetDeviceLabel(transfer);
+        const progressDetails = transferProgressDetails(transfer);
         const itemList = (transfer.items || [])
           .map((item) => `${escapeHtml(item.filename)} (${escapeHtml(item.state)})`)
           .join("</li><li>");
@@ -611,9 +1242,7 @@ export function createNetworkController({
         if (direction === "incoming" && transfer.state === "pending_receiver_approval") {
           actions = `
             <div class="transfer-actions">
-              <input class="passcode-input" type="password" inputmode="numeric" maxlength="4" placeholder="4-digit PIN" aria-label="Approval PIN" />
-              <button type="button" data-action="approve-transfer" data-transfer-id="${escapeHtml(transfer.id)}">Approve</button>
-              <button type="button" data-action="reject-transfer" data-transfer-id="${escapeHtml(transfer.id)}">Reject</button>
+              <button type="button" data-action="review-transfer" data-transfer-id="${escapeHtml(transfer.id)}">Review</button>
             </div>
           `;
         } else if (
@@ -622,7 +1251,7 @@ export function createNetworkController({
         ) {
           actions = `
             <div class="transfer-actions">
-              <input class="passcode-input" type="password" inputmode="numeric" maxlength="4" placeholder="4-digit PIN" aria-label="Sender PIN" />
+              <input class="passcode-input" type="password" inputmode="numeric" maxlength="4" placeholder="4-digit PIN" aria-label="Sender PIN" value="${escapeHtml(preferences.autoPasscode)}" />
               <button type="button" data-action="open-upload" data-transfer-id="${escapeHtml(transfer.id)}">Open + Upload</button>
               ${
                 job
@@ -633,13 +1262,22 @@ export function createNetworkController({
           `;
         }
 
+        const destinationMeta = preferences.destinationPath
+          ? `<p class="list-item-meta">Destination: ${escapeHtml(preferences.destinationPath)}</p>`
+          : "";
+        const targetMeta = `<p class="list-item-meta">Target device: ${escapeHtml(targetDeviceLabel)}</p>`;
+
         return `
           <div class="list-item" data-transfer-id="${escapeHtml(transfer.id)}">
             <div class="list-item-head">
-              <p class="list-item-title">${escapeHtml(direction === "incoming" ? "Incoming" : "Outgoing")} • ${escapeHtml(transfer.state)}</p>
+              <p class="list-item-title">${escapeHtml(direction === "incoming" ? "Receiving" : "Sending")} • ${escapeHtml(stateLabel)}</p>
               <span class="pill">${escapeHtml(transfer.id.slice(0, 8))}</span>
             </div>
+            ${targetMeta}
             <ul class="transfer-items"><li>${itemList || "No items"}</li></ul>
+            <p class="list-item-meta">${escapeHtml(progressDetails.label)}</p>
+            <div class="job-progress"><span style="width:${progressDetails.percent}%"></span></div>
+            ${destinationMeta}
             ${actions}
           </div>
         `;
@@ -678,20 +1316,6 @@ export function createNetworkController({
       .join("");
   }
 
-  async function hashFile(file, index, total) {
-    if (file.size > 64 * 1024 * 1024) {
-      setSessionStatus(`Preparing ${file.name} (${index + 1}/${total})...`);
-      return UNKNOWN_SHA256;
-    }
-    if (!window.crypto || !window.crypto.subtle) {
-      return UNKNOWN_SHA256;
-    }
-    setSessionStatus(`Hashing ${file.name} (${index + 1}/${total})...`);
-    const buffer = await file.arrayBuffer();
-    const hashBuffer = await window.crypto.subtle.digest("SHA-256", buffer);
-    return sha256Hex(hashBuffer);
-  }
-
   async function createTransferRequest() {
     if (!state.session.accessToken) {
       throw new Error("Connect to coordinator first");
@@ -709,32 +1333,60 @@ export function createNetworkController({
 
     const items = [];
     const localFileMap = new Map();
-    for (let index = 0; index < files.length; index += 1) {
-      const file = files[index];
-      const sha256 = await hashFile(file, index, files.length);
+    setSessionStatus("Preparing transfer metadata (hashing disabled for speed).");
+    for (const file of files) {
       const item = {
         filename: file.name,
         size: file.size,
-        sha256,
+        sha256: UNKNOWN_SHA256,
         mime_type: file.type || null,
       };
       items.push(item);
       localFileMap.set(fileFingerprint(item), file);
     }
 
-    const transfer = await requestJson("/api/v1/transfers", {
-      method: "POST",
-      body: {
-        receiver_device_id: receiverDeviceId,
-        receiver_share_id: receiverShareId,
-        items,
-      },
-    });
+    const chunks = [];
+    for (let index = 0; index < items.length; index += MAX_TRANSFER_ITEMS_PER_REQUEST) {
+      chunks.push(items.slice(index, index + MAX_TRANSFER_ITEMS_PER_REQUEST));
+    }
 
-    state.transferFiles.set(transfer.id, localFileMap);
-    state.transferDestinations.set(transfer.id, String(elements.sendDestination.value || "").trim());
+    const destination = String(elements.sendDestination?.value || "").trim();
+    let createdCount = 0;
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index];
+      const transfer = await requestJson("/api/v1/transfers", {
+        method: "POST",
+        timeoutMs: 60000,
+        body: {
+          receiver_device_id: receiverDeviceId,
+          receiver_share_id: receiverShareId,
+          items: chunk,
+        },
+      });
+      const chunkFileMap = new Map();
+      for (const item of chunk) {
+        const signature = fileFingerprint(item);
+        const file = localFileMap.get(signature);
+        if (file) {
+          chunkFileMap.set(signature, file);
+        }
+      }
+      state.transferFiles.set(transfer.id, chunkFileMap);
+      state.transferDestinations.set(transfer.id, destination);
+      state.autoUploadOpenedTransferIds.delete(transfer.id);
+      createdCount += 1;
+      if (chunks.length > 1) {
+        setSessionStatus(`Created transfer batch ${index + 1}/${chunks.length}...`);
+      }
+    }
+
     elements.sendFiles.value = "";
-    setSessionStatus("Transfer request created.", "success");
+    setSessionStatus(
+      createdCount > 1
+        ? `Created ${createdCount} transfer requests (${items.length} files).`
+        : "Transfer request created.",
+      "success",
+    );
     await refreshTransfers();
   }
 
@@ -749,11 +1401,24 @@ export function createNetworkController({
   }
 
   async function agentJson(url, { method = "GET", body, headers } = {}) {
-    const response = await fetch(url, {
-      method,
-      headers,
-      body,
-    });
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), AGENT_REQUEST_TIMEOUT_MS);
+    let response;
+    try {
+      response = await fetch(url, {
+        method,
+        headers,
+        body,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw new Error("Agent request timed out");
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+    }
     const contentType = response.headers.get("content-type") || "";
     const isJson = contentType.includes("application/json");
     const payload = isJson ? await response.json() : null;
@@ -768,6 +1433,18 @@ export function createNetworkController({
     return `${uploadBaseUrl}/${action}?${params.toString()}`;
   }
 
+  function formatUploadError(error) {
+    const message = error instanceof Error ? error.message : String(error || "Upload failed");
+    const normalized = message.toLowerCase();
+    if (normalized.includes("failed to fetch") || normalized.includes("networkerror")) {
+      return "Upload could not reach receiver agent. Check both devices are on the same LAN and agent port is reachable.";
+    }
+    if (normalized.includes("cors")) {
+      return "Upload blocked by browser cross-origin rules. Confirm receiver agent allows CORS.";
+    }
+    return message;
+  }
+
   async function processUploadJob(transfer, uploadOpenPayload) {
     const transferId = transfer.id;
     const files = state.transferFiles.get(transferId);
@@ -778,7 +1455,8 @@ export function createNetworkController({
     const uploadBaseUrl = uploadOpenPayload.upload_base_url;
     const uploadTicket = uploadOpenPayload.upload_ticket;
     const receiverShareId = uploadOpenPayload.transfer.receiver_share_id;
-    const destinationPath = state.transferDestinations.get(transferId) || "";
+    const preferences = parseTransferPreferences(uploadOpenPayload.transfer || transfer);
+    const destinationPath = state.transferDestinations.get(transferId) || preferences.destinationPath || "";
     const totalBytes = (transfer.items || []).reduce((sum, item) => sum + Number(item.size || 0), 0);
 
     state.uploadJobs.set(transferId, {
@@ -898,7 +1576,7 @@ export function createNetworkController({
       completed = true;
       await refreshTransfers();
     } catch (error) {
-      job.message = "Upload failed. Recreate request to retry.";
+      job.message = `Upload failed: ${formatUploadError(error)}`;
       renderUploadJobs();
       throw error;
     } finally {
@@ -944,14 +1622,28 @@ export function createNetworkController({
     const passcode = String(passcodeInput?.value || "").trim();
 
     try {
+      if (action === "review-transfer") {
+        const transfer = getTransferById(transferId);
+        if (!transfer) {
+          throw new Error("Transfer not found");
+        }
+        state.incomingDismissedTransferIds.delete(transferId);
+        openIncomingTransferModal(transfer);
+        return;
+      }
+
       if (action === "approve-transfer") {
         if (!/^\d{4}$/.test(passcode)) {
           throw new Error("Approve requires a valid 4-digit PIN");
         }
         await requestJson(`/api/v1/transfers/${encodeURIComponent(transferId)}/approve`, {
           method: "POST",
-          body: { passcode },
+          body: { passcode, destination_path: "" },
         });
+        state.incomingDismissedTransferIds.add(transferId);
+        if (state.incomingModalTransferId === transferId) {
+          closeIncomingTransferModal({ dismiss: false });
+        }
         await refreshTransfers();
         return;
       }
@@ -961,6 +1653,10 @@ export function createNetworkController({
           method: "POST",
           body: { reason: "" },
         });
+        state.incomingDismissedTransferIds.add(transferId);
+        if (state.incomingModalTransferId === transferId) {
+          closeIncomingTransferModal({ dismiss: false });
+        }
         await refreshTransfers();
         return;
       }
@@ -970,7 +1666,12 @@ export function createNetworkController({
         if (!transfer) {
           throw new Error("Transfer not found");
         }
-        const openPayload = await openUploadWindow(transferId, passcode);
+        const preferences = parseTransferPreferences(transfer);
+        const resolvedPasscode = /^\d{4}$/.test(passcode) ? passcode : preferences.autoPasscode;
+        if (!/^\d{4}$/.test(resolvedPasscode)) {
+          throw new Error("Open upload requires a valid 4-digit PIN");
+        }
+        const openPayload = await openUploadWindow(transferId, resolvedPasscode);
         await processUploadJob(transfer, openPayload);
         return;
       }
@@ -1002,6 +1703,19 @@ export function createNetworkController({
     }
 
     try {
+      if (action === "quick-send-device") {
+        state.selectedDeviceId = deviceId;
+        await refreshDevicesAndShares();
+        if (!state.selectedShareId) {
+          throw new Error("No shared folder available for this device");
+        }
+        state.quickSendQueued = true;
+        if (elements.sendFiles) {
+          elements.sendFiles.click();
+        }
+        setSessionStatus("Select files to send.", "success");
+        return;
+      }
       if (action === "select-device") {
         state.selectedDeviceId = deviceId;
         await refreshDevicesAndShares();
@@ -1054,7 +1768,7 @@ export function createNetworkController({
   }
 
   function syncTransferRoleTabs() {
-    for (const button of elements.transferRoleButtons) {
+    for (const button of transferRoleButtons) {
       const role = button.dataset.role || "all";
       const active = role === state.transferRole;
       button.classList.toggle("active", active);
@@ -1107,9 +1821,19 @@ export function createNetworkController({
     state.wsReconnectTimer = window.setTimeout(async () => {
       state.wsReconnectTimer = null;
       try {
+        if (state.wsReconnectAttempts >= MAX_WS_RECONNECT_ATTEMPTS_BEFORE_RECOVERY) {
+          await requestRecovery({ force: true });
+          return;
+        }
         await openEventsSocket();
       } catch {
-        // openEventsSocket handles retries.
+        if (state.wsReconnectAttempts >= MAX_WS_RECONNECT_ATTEMPTS_BEFORE_RECOVERY) {
+          try {
+            await requestRecovery({ force: true });
+          } catch {
+            // Keep reconnect loop alive.
+          }
+        }
       }
     }, delay + jitter);
     state.wsReconnectAttempts += 1;
@@ -1215,9 +1939,21 @@ export function createNetworkController({
         if (state.session.accessToken) {
           try {
             await refreshAll();
+            state.consecutiveRefreshFailures = 0;
           } catch {
-            // no-op
+            state.consecutiveRefreshFailures += 1;
+            if (state.consecutiveRefreshFailures >= MAX_REFRESH_FAILURES) {
+              state.session.accessToken = "";
+              closeEventsSocket({ allowReconnect: false });
+              requestRecovery().catch(() => {
+                // no-op
+              });
+            }
           }
+        } else if (state.session.baseUrl && shouldAttemptRecovery()) {
+          requestRecovery().catch(() => {
+            // no-op
+          });
         }
         await tick();
       }, getRefreshIntervalMs());
@@ -1225,148 +1961,394 @@ export function createNetworkController({
     tick();
   }
 
-  function bindEvents() {
-    elements.connectButton.addEventListener("click", async () => {
+  function resetSessionState() {
+    closeEventsSocket({ allowReconnect: false });
+    state.session = defaultSession();
+    state.devices = [];
+    state.shares = [];
+    state.transfers = [];
+    state.uploadJobs.clear();
+    state.transferFiles.clear();
+    state.transferDestinations.clear();
+    state.shareRootById.clear();
+    state.incomingModalTransferId = "";
+    state.incomingModalQueued = [];
+    state.incomingDismissedTransferIds.clear();
+    state.autoUploadOpenedTransferIds.clear();
+    clearSessionStorage();
+    syncSessionForm();
+    renderDeviceList();
+    renderShareList();
+    renderTransferList();
+    renderUploadJobs();
+  }
+
+  async function tryConnectCandidate(baseUrl, identitySnapshot) {
+    const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+    if (!normalizedBaseUrl) {
+      throw new Error("Invalid coordinator URL");
+    }
+
+    state.session.baseUrl = normalizedBaseUrl;
+    state.session.accessToken = "";
+    restoreIdentity(identitySnapshot);
+    syncSessionForm();
+
+    if (hasIdentity(identitySnapshot)) {
       try {
         await connectAndRefresh();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Connection failed";
-        setSessionStatus(message, "error");
-        onStatus?.(message, true);
-      }
-    });
-
-    elements.saveSettingsButton.addEventListener("click", () => {
-      const previousIdentity = `${state.session.baseUrl}|${state.session.principalId}|${state.session.clientDeviceId}`;
-      readSessionForm();
-      if (!state.session.baseUrl) {
-        setSessionStatus("Invalid coordinator URL", "error");
         return;
-      }
-      const nextIdentity = `${state.session.baseUrl}|${state.session.principalId}|${state.session.clientDeviceId}`;
-      saveSessionProfile();
-      saveRuntimeSession();
-      if (previousIdentity !== nextIdentity) {
+      } catch {
         state.session.accessToken = "";
-        closeEventsSocket({ allowReconnect: false });
       }
-      setSessionStatus("Settings saved", "success");
-    });
+    }
 
-    elements.clearSettingsButton.addEventListener("click", () => {
-      closeEventsSocket({ allowReconnect: false });
-      state.session = defaultSession();
-      state.devices = [];
-      state.shares = [];
-      state.transfers = [];
-      state.uploadJobs.clear();
-      state.transferFiles.clear();
-      state.transferDestinations.clear();
-      clearSessionStorage();
-      syncSessionForm();
-      renderDeviceList();
-      renderShareList();
-      renderTransferList();
-      renderUploadJobs();
-      setSessionStatus("Settings cleared");
-    });
+    restoreIdentity({ principalId: "", clientDeviceId: "", deviceSecret: "" });
+    syncSessionForm();
+    await bootstrapOrStartPairing({ autoJoin: true });
+    await connectAndRefresh();
+  }
 
-    elements.pairStartButton.addEventListener("click", async () => {
+  async function recoverAutoConnection({ force = false } = {}) {
+    if (!force && !shouldAttemptRecovery()) {
+      return;
+    }
+    state.lastRecoveryAttemptAt = Date.now();
+    readSessionForm();
+
+    const identitySnapshot = currentIdentitySnapshot();
+    const candidates = await discoverCoordinatorBaseUrls({ force });
+    if (!candidates.length) {
+      throw new Error("No coordinator found on this network");
+    }
+
+    const failures = [];
+    const probeResults = await Promise.all(
+      candidates.map(async (candidate) => ({
+        candidate,
+        reachable: await probeCoordinatorBaseUrl(candidate),
+      })),
+    );
+
+    const reachableCandidates = [];
+    for (const result of probeResults) {
+      if (!result.reachable) {
+        failures.push(`${result.candidate} unreachable`);
+        continue;
+      }
+      reachableCandidates.push(result.candidate);
+    }
+
+    for (const candidate of reachableCandidates) {
       try {
-        await bootstrapOrStartPairing();
-        if (state.session.accessToken) {
+        await tryConnectCandidate(candidate, identitySnapshot);
+        state.consecutiveRefreshFailures = 0;
+        return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "connection failed";
+        failures.push(`${candidate}: ${message}`);
+      }
+    }
+
+    // If all probes failed, attempt direct connect on top candidates as a final fallback.
+    if (!reachableCandidates.length) {
+      for (const candidate of candidates.slice(0, 3)) {
+        try {
+          await tryConnectCandidate(candidate, identitySnapshot);
+          state.consecutiveRefreshFailures = 0;
+          return;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "connection failed";
+          failures.push(`${candidate}: ${message}`);
+        }
+      }
+    }
+
+    throw new Error(failures[0] || "No coordinator found on this network");
+  }
+
+  function requestRecovery(options = {}) {
+    if (state.recoverPromise) {
+      return state.recoverPromise;
+    }
+    state.recoverPromise = (async () => {
+      try {
+        await recoverAutoConnection(options);
+      } finally {
+        state.recoverPromise = null;
+      }
+    })();
+    return state.recoverPromise;
+  }
+
+  function bindEvents() {
+    if (elements.connectButton) {
+      elements.connectButton.addEventListener("click", async () => {
+        try {
+          await connectAndRefresh();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Connection failed";
+          setSessionStatus(message, "error");
+          onStatus?.(message, true);
+        }
+      });
+    }
+
+    if (elements.saveSettingsButton) {
+      elements.saveSettingsButton.addEventListener("click", () => {
+        const previousIdentity = `${state.session.baseUrl}|${state.session.principalId}|${state.session.clientDeviceId}`;
+        readSessionForm();
+        if (!state.session.baseUrl) {
+          setSessionStatus("Invalid coordinator URL", "error");
+          return;
+        }
+        const nextIdentity = `${state.session.baseUrl}|${state.session.principalId}|${state.session.clientDeviceId}`;
+        saveSessionProfile();
+        saveRuntimeSession();
+        if (previousIdentity !== nextIdentity) {
+          state.session.accessToken = "";
+          closeEventsSocket({ allowReconnect: false });
+        }
+        setSessionStatus("Settings saved", "success");
+      });
+    }
+
+    if (elements.clearSettingsButton) {
+      elements.clearSettingsButton.addEventListener("click", async () => {
+        resetSessionState();
+        setSessionStatus("Session reset. Reconnecting...");
+        try {
+          await requestRecovery({ force: true });
+          setSessionStatus("Connected automatically.", "success");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Reconnect failed";
+          setSessionStatus(message, "error");
+        }
+      });
+    }
+
+    if (elements.pairStartButton) {
+      elements.pairStartButton.addEventListener("click", async () => {
+        try {
+          await bootstrapOrStartPairing();
+          if (state.session.accessToken) {
+            try {
+              await openEventsSocket();
+            } catch {
+              scheduleWsReconnect();
+            }
+            await refreshAll({ includeTransfers: true, force: true });
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Pairing start failed";
+          setPairingStatus(message, "error");
+          onStatus?.(message, true);
+        }
+      });
+    }
+
+    if (elements.pairConfirmButton) {
+      elements.pairConfirmButton.addEventListener("click", async () => {
+        try {
+          await confirmPairing();
           try {
             await openEventsSocket();
           } catch {
             scheduleWsReconnect();
           }
           await refreshAll({ includeTransfers: true, force: true });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Pairing confirmation failed";
+          setPairingStatus(message, "error");
+          onStatus?.(message, true);
         }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Pairing start failed";
-        setPairingStatus(message, "error");
-        onStatus?.(message, true);
-      }
-    });
+      });
+    }
 
-    elements.pairConfirmButton.addEventListener("click", async () => {
-      try {
-        await confirmPairing();
+    if (elements.networkRefresh) {
+      elements.networkRefresh.addEventListener("click", async () => {
         try {
-          await openEventsSocket();
-        } catch {
-          scheduleWsReconnect();
+          if (!state.session.accessToken) {
+            await requestRecovery({ force: true });
+          } else {
+            await refreshAll({ includeTransfers: true, force: true });
+            state.consecutiveRefreshFailures = 0;
+          }
+          setSessionStatus("Refreshed", "success");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Refresh failed";
+          setSessionStatus(message, "error");
+          onStatus?.(message, true);
         }
-        await refreshAll({ includeTransfers: true, force: true });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Pairing confirmation failed";
-        setPairingStatus(message, "error");
-        onStatus?.(message, true);
+      });
+    }
+
+    if (elements.transferCancelPendingButton) {
+      elements.transferCancelPendingButton.addEventListener("click", async () => {
+        try {
+          await cancelPendingTransfers();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to cancel pending transfers";
+          setSessionStatus(message, "error");
+          onStatus?.(message, true);
+        }
+      });
+    }
+
+    if (elements.transferClearHistoryButton) {
+      elements.transferClearHistoryButton.addEventListener("click", async () => {
+        try {
+          await clearTransferHistory();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to clear transfer history";
+          setSessionStatus(message, "error");
+          onStatus?.(message, true);
+        }
+      });
+    }
+
+    if (elements.incomingTransferClose) {
+      elements.incomingTransferClose.addEventListener("click", () => {
+        closeIncomingTransferModal();
+      });
+    }
+    if (elements.incomingTransferModal) {
+      elements.incomingTransferModal.addEventListener("click", (event) => {
+        if (event.target === elements.incomingTransferModal) {
+          closeIncomingTransferModal();
+        }
+      });
+    }
+    if (elements.incomingTransferBrowse) {
+      elements.incomingTransferBrowse.addEventListener("click", async () => {
+        try {
+          await browseIncomingDestinationFolder();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unable to choose destination folder";
+          setSessionStatus(message, "error");
+          onStatus?.(message, true);
+        }
+      });
+    }
+    if (elements.incomingTransferApprove) {
+      elements.incomingTransferApprove.addEventListener("click", async () => {
+        try {
+          await approveIncomingTransferFromModal();
+          setSessionStatus("Transfer approved.", "success");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to approve transfer";
+          setSessionStatus(message, "error");
+          onStatus?.(message, true);
+        }
+      });
+    }
+    if (elements.incomingTransferReject) {
+      elements.incomingTransferReject.addEventListener("click", async () => {
+        try {
+          await rejectIncomingTransferFromModal();
+          setSessionStatus("Transfer rejected.", "success");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to reject transfer";
+          setSessionStatus(message, "error");
+          onStatus?.(message, true);
+        }
+      });
+    }
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && state.incomingModalTransferId) {
+        closeIncomingTransferModal();
       }
     });
 
-    elements.networkRefresh.addEventListener("click", async () => {
-      try {
-        await refreshAll({ includeTransfers: true, force: true });
-        setSessionStatus("Refreshed", "success");
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Refresh failed";
-        setSessionStatus(message, "error");
-      }
-    });
+    if (elements.sendDevice) {
+      elements.sendDevice.addEventListener("change", async () => {
+        state.selectedDeviceId = String(elements.sendDevice.value || "");
+        try {
+          await refreshDevicesAndShares();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed loading shares";
+          setSessionStatus(message, "error");
+        }
+      });
+    }
 
-    elements.sendDevice.addEventListener("change", async () => {
-      state.selectedDeviceId = String(elements.sendDevice.value || "");
-      try {
-        await refreshDevicesAndShares();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Failed loading shares";
-        setSessionStatus(message, "error");
-      }
-    });
+    if (elements.sendShare) {
+      elements.sendShare.addEventListener("change", async () => {
+        state.selectedShareId = String(elements.sendShare.value || "");
+        renderShareList();
+        if (!elements.remoteList) {
+          return;
+        }
+        try {
+          await loadRemoteDirectory("");
+        } catch {
+          // ignore single refresh errors
+        }
+      });
+    }
 
-    elements.sendShare.addEventListener("change", async () => {
-      state.selectedShareId = String(elements.sendShare.value || "");
-      renderShareList();
-      try {
-        await loadRemoteDirectory("");
-      } catch {
-        // ignore single refresh errors
-      }
-    });
+    if (elements.remoteLoadButton) {
+      elements.remoteLoadButton.addEventListener("click", async () => {
+        try {
+          await loadRemoteDirectory();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to load remote directory";
+          setSessionStatus(message, "error");
+          onStatus?.(message, true);
+        }
+      });
+    }
 
-    elements.remoteLoadButton.addEventListener("click", async () => {
-      try {
-        await loadRemoteDirectory();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Failed to load remote directory";
-        setSessionStatus(message, "error");
-        onStatus?.(message, true);
-      }
-    });
+    if (elements.remoteRunSearchButton) {
+      elements.remoteRunSearchButton.addEventListener("click", async () => {
+        try {
+          await runRemoteSearch();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Remote search failed";
+          setSessionStatus(message, "error");
+          onStatus?.(message, true);
+        }
+      });
+    }
 
-    elements.remoteRunSearchButton.addEventListener("click", async () => {
-      try {
-        await runRemoteSearch();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Remote search failed";
-        setSessionStatus(message, "error");
-        onStatus?.(message, true);
-      }
-    });
+    if (elements.sendRequestButton) {
+      elements.sendRequestButton.addEventListener("click", async () => {
+        try {
+          state.quickSendQueued = false;
+          await createTransferRequest();
+          onStatus?.("Transfer request created", false);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to create transfer";
+          setSessionStatus(message, "error");
+          onStatus?.(message, true);
+        }
+      });
+    }
 
-    elements.sendRequestButton.addEventListener("click", async () => {
-      try {
-        await createTransferRequest();
-        onStatus?.("Transfer request created", false);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Failed to create transfer";
-        setSessionStatus(message, "error");
-        onStatus?.(message, true);
-      }
-    });
+    if (elements.sendFiles) {
+      elements.sendFiles.addEventListener("change", async () => {
+        const count = elements.sendFiles.files ? elements.sendFiles.files.length : 0;
+        if (count < 1) {
+          state.quickSendQueued = false;
+          return;
+        }
+        if (!state.quickSendQueued) {
+          return;
+        }
+        try {
+          await createTransferRequest();
+          onStatus?.("Transfer request created", false);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to create transfer";
+          setSessionStatus(message, "error");
+          onStatus?.(message, true);
+        } finally {
+          state.quickSendQueued = false;
+        }
+      });
+    }
 
-    elements.transferRoleButtons.forEach((button) => {
+    transferRoleButtons.forEach((button) => {
       button.addEventListener("click", async () => {
         setTransferRole(button.dataset.role || "all");
         try {
@@ -1381,43 +2363,58 @@ export function createNetworkController({
           return;
         }
         event.preventDefault();
-        const items = elements.transferRoleButtons;
-        if (!items.length) {
+        if (!transferRoleButtons.length) {
           return;
         }
-        const currentIndex = items.indexOf(button);
+        const currentIndex = transferRoleButtons.indexOf(button);
         if (currentIndex < 0) {
           return;
         }
         const delta = event.key === "ArrowRight" ? 1 : -1;
-        const nextIndex = (currentIndex + delta + items.length) % items.length;
-        items[nextIndex].focus();
+        const nextIndex = (currentIndex + delta + transferRoleButtons.length) % transferRoleButtons.length;
+        transferRoleButtons[nextIndex].focus();
       });
     });
 
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible" && state.session.accessToken) {
-        refreshAll({ force: true }).catch(() => {
+      if (document.visibilityState === "visible") {
+        if (state.session.accessToken) {
+          refreshAll({ force: true }).catch(() => {
+            // no-op
+          });
+          return;
+        }
+        requestRecovery().catch(() => {
           // no-op
         });
       }
     });
 
-    elements.deviceList.addEventListener("click", (event) => {
-      handleDeviceAction(event);
-    });
-    elements.shareList.addEventListener("click", (event) => {
-      handleShareAction(event);
-    });
-    elements.remoteList.addEventListener("click", (event) => {
-      handleRemoteAction(event);
-    });
-    elements.transferList.addEventListener("click", (event) => {
-      handleTransferAction(event);
-    });
-    elements.uploadJobs.addEventListener("click", (event) => {
-      handleTransferAction(event);
-    });
+    if (elements.deviceList) {
+      elements.deviceList.addEventListener("click", (event) => {
+        handleDeviceAction(event);
+      });
+    }
+    if (elements.shareList) {
+      elements.shareList.addEventListener("click", (event) => {
+        handleShareAction(event);
+      });
+    }
+    if (elements.remoteList) {
+      elements.remoteList.addEventListener("click", (event) => {
+        handleRemoteAction(event);
+      });
+    }
+    if (elements.transferList) {
+      elements.transferList.addEventListener("click", (event) => {
+        handleTransferAction(event);
+      });
+    }
+    if (elements.uploadJobs) {
+      elements.uploadJobs.addEventListener("click", (event) => {
+        handleTransferAction(event);
+      });
+    }
   }
 
   async function init() {
@@ -1427,17 +2424,11 @@ export function createNetworkController({
     setTransferRole(state.transferRole);
     scheduleRefreshLoop();
 
-    const hasProfile = state.session.baseUrl && state.session.principalId && state.session.clientDeviceId;
-    if (hasProfile && state.session.deviceSecret) {
-      try {
-        await connectAndRefresh();
-      } catch {
-        setSessionStatus("Saved profile found. Connect to refresh session.");
-      }
-    } else if (hasProfile) {
-      setSessionStatus("Saved profile found. Enter device secret, then connect.");
-    } else {
-      setSessionStatus("Configure coordinator session to enable network features.");
+    try {
+      await requestRecovery({ force: true });
+      setSessionStatus("Connected automatically.", "success");
+    } catch {
+      setSessionStatus("Waiting for nearby coordinator...");
     }
     renderDeviceList();
     renderShareList();

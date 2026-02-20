@@ -25,6 +25,11 @@
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle theme">
         Light
       </button>
+      {% if network_info %}
+      <button id="network-links-open" class="network-links-btn" type="button">
+        Open On Other Devices
+      </button>
+      {% endif %}
       <a class="logout-link" href="{{ url_for('web.setup') }}">Setup</a>
       <a class="logout-link" href="{{ url_for('web.logout') }}">Logout</a>
     </div>
@@ -56,164 +61,114 @@
     </section>
     <section id="file-list" class="file-list"></section>
 
-    <section class="network-shell" aria-label="Network controls">
+    <section id="network-shell" class="network-shell" aria-label="Nearby devices"
+      data-default-coordinator-url="{{ network_session_defaults.coordinator_url if network_session_defaults else (network_info.default_coordinator_url if network_info else '') }}"
+      data-default-principal-id="{{ network_session_defaults.principal_id if network_session_defaults else '' }}"
+      data-default-client-device-id="{{ network_session_defaults.client_device_id if network_session_defaults else '' }}"
+      data-default-device-secret="{{ network_session_defaults.device_secret if network_session_defaults else '' }}"
+      data-local-agent-device-id="{{ network_session_defaults.local_agent_device_id if network_session_defaults else '' }}">
       <div class="network-head">
-        <h2 class="network-title">Network</h2>
+        <h2 class="network-title">Nearby Devices</h2>
         <button id="network-refresh" class="network-refresh" type="button">Refresh</button>
       </div>
+      <p class="network-note">No setup steps. Devices on the same network appear automatically.</p>
+      <div id="coord-session-status" class="network-status">Auto-discovery is running...</div>
 
-      <div class="network-grid">
-        <section class="network-card wizard-step">
-          <h3>🔌 1. Connect to Network</h3>
-          <p class="network-note">Join the main server to discover other devices on your local network. You'll need the
-            Server Address provided by the host.</p>
-          <div class="field">
-            <label for="coord-url">Server Address</label>
-            <input id="coord-url" type="url" placeholder="e.g., http://192.168.1.50:7000" />
-          </div>
-
-          <details class="compact-details">
-            <summary>Advanced Settings</summary>
-            <div class="field-grid">
-              <div class="field">
-                <label for="principal-id">Account ID</label>
-                <input id="principal-id" type="text" placeholder="Your specific account ID" />
-              </div>
-              <div class="field">
-                <label for="client-device-id">Device ID</label>
-                <input id="client-device-id" type="text" placeholder="Unique name for this device" />
-              </div>
-            </div>
-            <div class="field">
-              <label for="device-secret">Secret Password</label>
-              <input id="device-secret" type="password" placeholder="Leave blank if none" />
-            </div>
-          </details>
-
-          <div class="action-row">
-            <button id="coord-connect" class="primary" type="button">Connect</button>
-            <button id="coord-save-settings" type="button">Save Info</button>
-            <button id="coord-clear-settings" type="button">Clear Info</button>
-          </div>
-          <div id="coord-session-status" class="network-status">You are not connected yet.</div>
-
-          <details class="compact-details" style="margin-top: 1rem;">
-            <summary>Quick Link a New Device</summary>
-            <p class="network-note" style="margin-top: 0.5rem; margin-bottom: 0.5rem;">Securely link your phone or
-              another laptop to this network.</p>
-            <div class="field-grid">
-              <div class="field">
-                <label for="pair-display-name">Your Name</label>
-                <input id="pair-display-name" type="text" placeholder="e.g. John" />
-              </div>
-              <div class="field">
-                <label for="pair-device-name">Device Name</label>
-                <input id="pair-device-name" type="text" placeholder="e.g. John's iPhone" />
-              </div>
-            </div>
-            <div class="action-row">
-              <button id="pair-start" class="primary" type="button">Get a Link Code</button>
-              <button id="pair-confirm" type="button">Enter a Link Code</button>
-            </div>
-            <div class="field-grid">
-              <div class="field">
-                <label for="pair-pending-id">Link ID</label>
-                <input id="pair-pending-id" type="text" placeholder="Wait for ID..." />
-              </div>
-              <div class="field">
-                <label for="pair-code">Secret Code</label>
-                <input id="pair-code" type="text" placeholder="000000" />
-              </div>
-            </div>
-            <div id="pairing-status" class="network-status">No active link request right now.</div>
-          </details>
-        </section>
-
-        <section class="network-card wizard-step">
-          <h3>👥 2. People & Devices Nearby</h3>
-          <p class="network-note">See who is currently online to share files with. Click on a person to see their shared
-            folders.</p>
+      <div class="network-grid simple-network-grid">
+        <section class="network-card">
+          <h3>Online Devices</h3>
           <div id="device-list" class="list-stack"></div>
         </section>
 
-        <section class="network-card wizard-step">
-          <h3>📁 3. Shared Folders</h3>
-          <p class="network-note">Select a person above, then pick a folder they are sharing to open it or send files to
-            it.</p>
-          <div id="share-list" class="list-stack"></div>
-        </section>
-
-        <section class="network-card wizard-step">
-          <h3>🔍 Browse Shared Folders</h3>
-          <p class="network-note">Look inside the shared folder you just picked without downloading everything.</p>
-          <div class="field">
-            <label for="remote-path">Folder Path (optional)</label>
-            <input id="remote-path" type="text" placeholder="e.g. photos/vacation" />
-          </div>
-          <div class="field">
-            <label for="remote-search">Search for a file inside (optional)</label>
-            <input id="remote-search" type="text" placeholder="e.g. document.pdf" />
-          </div>
-          <div class="action-row">
-            <button id="remote-load" class="primary" type="button">Open Folder</button>
-            <button id="remote-run-search" type="button">Search inside</button>
-          </div>
-          <div id="remote-list" class="list-stack"></div>
-        </section>
-
-        <section class="network-card wizard-step">
-          <h3>📤 Send Files to Someone</h3>
-          <p class="network-note">Pick a device and folder above, then choose your files to send directly to them.</p>
+        <section class="network-card">
+          <h3>Send Files</h3>
+          <p class="network-note">One tap: click "Send Files" on a device card, pick files, done.</p>
           <div class="field-grid">
             <div class="field">
-              <label for="send-device">Who to send to?</label>
+              <label for="send-device">Device</label>
               <select id="send-device"></select>
             </div>
             <div class="field">
-              <label for="send-share">Which folder of theirs?</label>
+              <label for="send-share">Folder</label>
               <select id="send-share"></select>
             </div>
           </div>
 
           <div class="field">
-            <label style="font-weight: 500;">What files do you want to send?</label>
+            <label style="font-weight: 500;">Files</label>
             <input id="send-files" type="file" multiple class="sr-only"
               onchange="document.getElementById('file-name-display').textContent = this.files.length > 0 ? this.files.length + ' file(s) selected' : 'No files selected'" />
             <label for="send-files" class="custom-file-upload">
               <span class="upload-icon">📂</span>
-              <span>Click to Choose Files</span>
+              <span>Choose Files</span>
             </label>
             <div id="file-name-display" class="file-name-display">No files selected</div>
           </div>
 
-          <div class="field">
-            <label for="send-destination">Inside folder (optional)</label>
-            <input id="send-destination" type="text" placeholder="Where to put it? e.g. music/" />
-          </div>
           <div class="action-row">
-            <button id="send-request" class="primary" type="button">Send Files Now!</button>
+            <button id="send-request" class="primary" type="button">Send</button>
           </div>
           <div id="upload-jobs" class="list-stack"></div>
         </section>
 
         <section class="network-card transfer-card">
           <div class="transfer-head">
-            <h3>📊 4. Transfer Progress</h3>
-            <div class="transfer-role-tabs" role="tablist" aria-label="Transfer role">
-              <button type="button" class="transfer-role active" data-role="all" role="tab" aria-selected="true"
-                tabindex="0">All</button>
-              <button type="button" class="transfer-role" data-role="incoming" role="tab" aria-selected="false"
-                tabindex="-1">Receiving</button>
-              <button type="button" class="transfer-role" data-role="outgoing" role="tab" aria-selected="false"
-                tabindex="-1">Sending</button>
+            <h3>Transfers</h3>
+            <div class="transfer-head-actions">
+              <div class="transfer-role-tabs" role="tablist" aria-label="Transfer role">
+                <button type="button" class="transfer-role active" data-role="all" role="tab" aria-selected="true"
+                  tabindex="0">All</button>
+                <button type="button" class="transfer-role" data-role="incoming" role="tab" aria-selected="false"
+                  tabindex="-1">Receiving</button>
+                <button type="button" class="transfer-role" data-role="outgoing" role="tab" aria-selected="false"
+                  tabindex="-1">Sending</button>
+              </div>
+              <button id="transfer-cancel-pending" class="network-refresh" type="button">Cancel Pending</button>
+              <button id="transfer-clear-history" class="network-refresh" type="button">Clear History</button>
             </div>
           </div>
-          <p class="network-note">Keep track of the files you are currently sending or receiving.</p>
           <div id="transfer-list" class="list-stack"></div>
         </section>
       </div>
+      <div class="network-foot">
+        <button id="coord-reset-session" class="network-refresh" type="button">Reset Session</button>
+      </div>
     </section>
   </main>
+
+  <div id="incoming-transfer-modal" class="modal hidden" role="dialog" aria-modal="true"
+    aria-labelledby="incoming-transfer-title">
+    <div class="modal-content incoming-transfer-modal-content">
+      <div class="modal-topbar">
+        <div class="network-info-title-wrap">
+          <h2 id="incoming-transfer-title" class="network-info-title">Incoming Files</h2>
+          <p id="incoming-transfer-summary" class="network-info-subtitle">Someone wants to send you files.</p>
+        </div>
+        <button id="incoming-transfer-close" class="close-btn" type="button" aria-label="Close">x</button>
+      </div>
+
+      <div class="incoming-transfer-body">
+        <div id="incoming-transfer-files" class="list-stack"></div>
+        <div class="field">
+          <label for="incoming-transfer-destination">Save Into Folder</label>
+          <div class="incoming-destination-row">
+            <input id="incoming-transfer-destination" type="text" placeholder="Shared root (default)" />
+            <button id="incoming-transfer-browse" type="button" class="network-refresh">Browse</button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="incoming-transfer-passcode">Approval PIN</label>
+          <input id="incoming-transfer-passcode" type="text" inputmode="numeric" maxlength="4" placeholder="4-digit PIN" />
+        </div>
+        <p class="network-note incoming-transfer-note">Approve to notify sender immediately.</p>
+      </div>
+
+      <div class="action-row incoming-transfer-actions">
+        <button id="incoming-transfer-reject" type="button">Reject</button>
+        <button id="incoming-transfer-approve" type="button" class="primary">Accept</button>
+      </div>
+    </div>
+  </div>
 
   <div id="preview-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="preview-modal-title">
     <div class="modal-content">
@@ -235,6 +190,56 @@
       <div id="modal-preview" class="modal-preview"></div>
     </div>
   </div>
+
+  {% if network_info %}
+  <div id="network-info-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="network-info-title">
+    <div class="modal-content network-info-modal-content">
+      <div class="modal-topbar">
+        <div class="network-info-title-wrap">
+          <h2 id="network-info-title" class="network-info-title">Open On Other Devices</h2>
+          <p class="network-info-subtitle">Share one URL. People on your Wi-Fi can join instantly.</p>
+        </div>
+        <button id="network-info-close" class="close-btn" type="button" aria-label="Close">x</button>
+      </div>
+
+      <div class="network-info-grid">
+        <div class="lan-url-row">
+          <span class="lan-url-label">Open this in browser</span>
+          <code class="lan-url-value">{{ network_info.primary_web_url }}</code>
+          <button type="button" class="network-refresh" data-copy-url="{{ network_info.primary_web_url }}">Copy</button>
+        </div>
+
+        <div class="lan-url-row">
+          <span class="lan-url-label">Coordinator address</span>
+          <code class="lan-url-value">{{ network_info.default_coordinator_url }}</code>
+          <button type="button" class="network-refresh" data-copy-url="{{ network_info.default_coordinator_url }}">Copy</button>
+        </div>
+      </div>
+
+      {% if not network_info.web_lan_accessible %}
+      <p class="lan-warning">Web host binding is {{ network_info.web_bind_host }}. LAN clients may fail.</p>
+      {% endif %}
+      {% if not network_info.coordinator_lan_accessible %}
+      <p class="lan-warning">Coordinator host binding is {{ network_info.coordinator_bind_host }}. Device discovery may fail.</p>
+      {% endif %}
+
+      {% if network_info.web_urls|length > 1 %}
+      <details class="compact-details">
+        <summary>Show more local URLs</summary>
+        <div class="lan-url-list">
+          {% for candidate_url in network_info.web_urls %}
+          <div class="lan-url-row">
+            <span class="lan-url-label">Alt URL</span>
+            <code class="lan-url-value">{{ candidate_url }}</code>
+            <button type="button" class="network-refresh" data-copy-url="{{ candidate_url }}">Copy</button>
+          </div>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
 
   <script type="module" src="{{ url_for('static', filename='js/main.js') }}"></script>
 </body>

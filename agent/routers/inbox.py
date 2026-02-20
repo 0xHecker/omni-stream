@@ -104,12 +104,13 @@ def pause_transfer(
     ticket: str = Query(min_length=1),
     db: Session = Depends(get_db),
 ) -> dict:
+    config = load_config()
     verify_transfer_ticket(ticket, transfer_id, share_id)
     items = _load_items(db, transfer_id, share_id)
     for item in items:
         if item.state in {"pending", "receiving", "staged"}:
             item.state = "paused"
-            notify_transfer_item_state(load_config(), transfer_id, item.item_id, "paused")
+            notify_transfer_item_state(config, transfer_id, item.item_id, "paused")
     db.commit()
     return {"ok": True}
 
@@ -121,12 +122,13 @@ def resume_transfer(
     ticket: str = Query(min_length=1),
     db: Session = Depends(get_db),
 ) -> dict:
+    config = load_config()
     verify_transfer_ticket(ticket, transfer_id, share_id)
     items = _load_items(db, transfer_id, share_id)
     for item in items:
         if item.state == "paused":
             item.state = "receiving"
-            notify_transfer_item_state(load_config(), transfer_id, item.item_id, "receiving")
+            notify_transfer_item_state(config, transfer_id, item.item_id, "receiving")
     db.commit()
     return {"ok": True}
 
@@ -255,9 +257,12 @@ async def upload_chunk(
     record.received_size = offset + written
     if is_last_chunk and record.received_size != record.expected_size:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Final chunk does not match expected size")
-    record.state = "staged" if is_last_chunk else "receiving"
+    new_state = "staged" if is_last_chunk else "receiving"
+    state_changed = record.state != new_state
+    record.state = new_state
     db.commit()
-    notify_transfer_item_state(config, transfer_id, record.item_id, record.state)
+    if state_changed:
+        notify_transfer_item_state(config, transfer_id, record.item_id, record.state)
     return {
         "item_id": record.item_id,
         "received_size": record.received_size,

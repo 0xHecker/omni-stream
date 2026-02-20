@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
 from stream_server.services.file_service import (
@@ -45,3 +46,11 @@ def test_pdf_thumbnail_falls_back_to_placeholder_when_renderer_missing(tmp_path:
 
     payload = generate_file_thumbnail_bytes(pdf, "pdf", (220, 220))
     assert payload
+
+
+def test_agent_app_enables_cors_middleware(monkeypatch) -> None:
+    monkeypatch.setenv("ALLOW_INSECURE_DEFAULTS", "1")
+    module = importlib.import_module("agent.main")
+    app = module.create_app()
+    middleware_names = {middleware.cls.__name__ for middleware in app.user_middleware}
+    assert "CORSMiddleware" in middleware_names

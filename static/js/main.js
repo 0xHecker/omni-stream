@@ -30,37 +30,33 @@ document.addEventListener("DOMContentLoaded", () => {
   dom.searchRecursive = document.getElementById("search-recursive");
   dom.searchClear = document.getElementById("search-clear");
   dom.emptyState = document.getElementById("empty-state");
+  dom.networkShell = document.getElementById("network-shell");
   dom.networkRefresh = document.getElementById("network-refresh");
-  dom.coordUrl = document.getElementById("coord-url");
-  dom.principalId = document.getElementById("principal-id");
-  dom.clientDeviceId = document.getElementById("client-device-id");
-  dom.deviceSecret = document.getElementById("device-secret");
-  dom.coordConnect = document.getElementById("coord-connect");
-  dom.coordSaveSettings = document.getElementById("coord-save-settings");
-  dom.coordClearSettings = document.getElementById("coord-clear-settings");
+  dom.coordClearSettings = document.getElementById("coord-reset-session");
   dom.coordSessionStatus = document.getElementById("coord-session-status");
-  dom.pairDisplayName = document.getElementById("pair-display-name");
-  dom.pairDeviceName = document.getElementById("pair-device-name");
-  dom.pairStart = document.getElementById("pair-start");
-  dom.pairConfirm = document.getElementById("pair-confirm");
-  dom.pairPendingId = document.getElementById("pair-pending-id");
-  dom.pairCode = document.getElementById("pair-code");
-  dom.pairingStatus = document.getElementById("pairing-status");
   dom.deviceList = document.getElementById("device-list");
-  dom.shareList = document.getElementById("share-list");
   dom.sendDevice = document.getElementById("send-device");
   dom.sendShare = document.getElementById("send-share");
-  dom.remotePath = document.getElementById("remote-path");
-  dom.remoteSearch = document.getElementById("remote-search");
-  dom.remoteLoad = document.getElementById("remote-load");
-  dom.remoteRunSearch = document.getElementById("remote-run-search");
-  dom.remoteList = document.getElementById("remote-list");
   dom.sendFiles = document.getElementById("send-files");
-  dom.sendDestination = document.getElementById("send-destination");
   dom.sendRequest = document.getElementById("send-request");
   dom.transferList = document.getElementById("transfer-list");
+  dom.transferCancelPending = document.getElementById("transfer-cancel-pending");
+  dom.transferClearHistory = document.getElementById("transfer-clear-history");
   dom.uploadJobs = document.getElementById("upload-jobs");
   dom.transferRoleButtons = [...document.querySelectorAll(".transfer-role")];
+  dom.incomingTransferModal = document.getElementById("incoming-transfer-modal");
+  dom.incomingTransferClose = document.getElementById("incoming-transfer-close");
+  dom.incomingTransferSummary = document.getElementById("incoming-transfer-summary");
+  dom.incomingTransferFiles = document.getElementById("incoming-transfer-files");
+  dom.incomingTransferDestination = document.getElementById("incoming-transfer-destination");
+  dom.incomingTransferBrowse = document.getElementById("incoming-transfer-browse");
+  dom.incomingTransferPasscode = document.getElementById("incoming-transfer-passcode");
+  dom.incomingTransferApprove = document.getElementById("incoming-transfer-approve");
+  dom.incomingTransferReject = document.getElementById("incoming-transfer-reject");
+  dom.copyUrlButtons = [...document.querySelectorAll("[data-copy-url]")];
+  dom.networkLinksOpen = document.getElementById("network-links-open");
+  dom.networkInfoModal = document.getElementById("network-info-modal");
+  dom.networkInfoClose = document.getElementById("network-info-close");
 
   const redirectToLogin = () => window.location.assign("/login");
   const api = createApiClient({ onUnauthorized: redirectToLogin });
@@ -79,33 +75,13 @@ document.addEventListener("DOMContentLoaded", () => {
     runSearchOrBrowse();
   }, 250);
   const requiredNetworkNodes = [
-    dom.coordUrl,
-    dom.principalId,
-    dom.clientDeviceId,
-    dom.deviceSecret,
-    dom.coordConnect,
-    dom.coordSaveSettings,
-    dom.coordClearSettings,
+    dom.networkShell,
     dom.coordSessionStatus,
-    dom.pairDisplayName,
-    dom.pairDeviceName,
-    dom.pairStart,
-    dom.pairConfirm,
-    dom.pairPendingId,
-    dom.pairCode,
-    dom.pairingStatus,
     dom.networkRefresh,
     dom.deviceList,
-    dom.shareList,
     dom.sendDevice,
     dom.sendShare,
-    dom.remotePath,
-    dom.remoteSearch,
-    dom.remoteLoad,
-    dom.remoteRunSearch,
-    dom.remoteList,
     dom.sendFiles,
-    dom.sendDestination,
     dom.sendRequest,
     dom.transferList,
     dom.uploadJobs,
@@ -114,37 +90,29 @@ document.addEventListener("DOMContentLoaded", () => {
   const network = hasNetworkDom
     ? createNetworkController({
       elements: {
-        coordUrl: dom.coordUrl,
-        principalId: dom.principalId,
-        clientDeviceId: dom.clientDeviceId,
-        deviceSecret: dom.deviceSecret,
-        connectButton: dom.coordConnect,
-        saveSettingsButton: dom.coordSaveSettings,
+        networkRoot: dom.networkShell,
         clearSettingsButton: dom.coordClearSettings,
         sessionStatus: dom.coordSessionStatus,
-        pairDisplayName: dom.pairDisplayName,
-        pairDeviceName: dom.pairDeviceName,
-        pairStartButton: dom.pairStart,
-        pairConfirmButton: dom.pairConfirm,
-        pairPendingId: dom.pairPendingId,
-        pairCode: dom.pairCode,
-        pairingStatus: dom.pairingStatus,
         networkRefresh: dom.networkRefresh,
         deviceList: dom.deviceList,
-        shareList: dom.shareList,
         sendDevice: dom.sendDevice,
         sendShare: dom.sendShare,
-        remotePath: dom.remotePath,
-        remoteSearch: dom.remoteSearch,
-        remoteLoadButton: dom.remoteLoad,
-        remoteRunSearchButton: dom.remoteRunSearch,
-        remoteList: dom.remoteList,
         sendFiles: dom.sendFiles,
-        sendDestination: dom.sendDestination,
         sendRequestButton: dom.sendRequest,
         transferRoleButtons: dom.transferRoleButtons,
         transferList: dom.transferList,
+        transferCancelPendingButton: dom.transferCancelPending,
+        transferClearHistoryButton: dom.transferClearHistory,
         uploadJobs: dom.uploadJobs,
+        incomingTransferModal: dom.incomingTransferModal,
+        incomingTransferClose: dom.incomingTransferClose,
+        incomingTransferSummary: dom.incomingTransferSummary,
+        incomingTransferFiles: dom.incomingTransferFiles,
+        incomingTransferDestination: dom.incomingTransferDestination,
+        incomingTransferBrowse: dom.incomingTransferBrowse,
+        incomingTransferPasscode: dom.incomingTransferPasscode,
+        incomingTransferApprove: dom.incomingTransferApprove,
+        incomingTransferReject: dom.incomingTransferReject,
       },
       onStatus: showStatus,
     })
@@ -186,8 +154,22 @@ document.addEventListener("DOMContentLoaded", () => {
     window.addEventListener("resize", preview.handleResize);
 
     document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && dom.networkInfoModal && !dom.networkInfoModal.classList.contains("hidden")) {
+        closeNetworkInfoModal();
+        return;
+      }
       preview.handleKeyDown(event);
     });
+
+    if (dom.networkLinksOpen && dom.networkInfoModal && dom.networkInfoClose) {
+      dom.networkLinksOpen.addEventListener("click", openNetworkInfoModal);
+      dom.networkInfoClose.addEventListener("click", closeNetworkInfoModal);
+      dom.networkInfoModal.addEventListener("click", (event) => {
+        if (event.target === dom.networkInfoModal) {
+          closeNetworkInfoModal();
+        }
+      });
+    }
 
     dom.searchInput.addEventListener("input", () => {
       const value = dom.searchInput.value.trim();
@@ -209,6 +191,35 @@ document.addEventListener("DOMContentLoaded", () => {
       dom.searchClear.classList.add("hidden");
       runSearchOrBrowse();
     });
+
+    dom.copyUrlButtons.forEach((button) => {
+      button.addEventListener("click", async () => {
+        const value = String(button.dataset.copyUrl || "").trim();
+        if (!value) {
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(value);
+          showStatus("Copied URL to clipboard.", false);
+        } catch {
+          showStatus(`Copy failed. Use this URL: ${value}`, true);
+        }
+      });
+    });
+  }
+
+  function openNetworkInfoModal() {
+    if (!dom.networkInfoModal) {
+      return;
+    }
+    dom.networkInfoModal.classList.remove("hidden");
+  }
+
+  function closeNetworkInfoModal() {
+    if (!dom.networkInfoModal) {
+      return;
+    }
+    dom.networkInfoModal.classList.add("hidden");
   }
 
   async function runSearchOrBrowse() {

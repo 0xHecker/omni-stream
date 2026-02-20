@@ -6,6 +6,8 @@ This repo contains three production services:
 - `agent/`: data plane on each sharing device (read/search/stream/download + inbox transfers).
 - `stream_server/`: web UI and local file browsing service.
 
+Quick architecture doc: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+
 ## One-Click Binaries (No Python Required)
 
 For non-coders, use the prebuilt binary for your OS:
@@ -26,6 +28,10 @@ AppImage is Linux-only, so the default release strategy is native binaries for a
    - choose shared folder
    - set 4-12 digit PIN
 4. Log in and use the app.
+5. On the main page, use **Open On Other Devices** to copy:
+   - Web App URL (`http://<LAN-IP>:5000/`)
+   - Coordinator Server Address (`http://<LAN-IP>:7000`)
+6. Network tab auto-discovers and auto-connects by default (manual fields are fallback only).
 
 Settings are saved locally to:
 
@@ -47,6 +53,7 @@ No manual environment variables are required for this flow.
 - Agent: `python agent_app.py` (default `:7001`)
 - Web UI: `python app.py --service web` (default `:5000`)
 - Unified launcher: `python app.py --service all` (starts coordinator + agent + web in dedicated processes)
+- Packaged binary default mode: `all` (starts coordinator + agent + web automatically)
 
 ## Build Binaries
 

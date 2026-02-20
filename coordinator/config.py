@@ -27,6 +27,18 @@ def _as_int(name: str, default: int) -> int:
         return default
 
 
+def _as_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 @dataclass(frozen=True)
 class CoordinatorConfig:
     database_url: str
@@ -36,8 +48,10 @@ class CoordinatorConfig:
     events_ws_token_ttl_seconds: int
     read_ticket_ttl_seconds: int
     transfer_ticket_ttl_seconds: int
+    browse_access_pin: str
     passcode_window_seconds: int
     pairing_code_ttl_seconds: int
+    auto_join_enabled: bool
     sync_thread_tokens: int
     search_executor_workers: int
 
@@ -62,10 +76,14 @@ def load_config() -> CoordinatorConfig:
         ),
         access_token_ttl_seconds=_as_int("COORDINATOR_ACCESS_TOKEN_TTL", 3600),
         events_ws_token_ttl_seconds=_as_int("COORDINATOR_EVENTS_WS_TOKEN_TTL", 90),
-        read_ticket_ttl_seconds=_as_int("COORDINATOR_READ_TICKET_TTL", 120),
-        transfer_ticket_ttl_seconds=_as_int("COORDINATOR_TRANSFER_TICKET_TTL", 300),
+        read_ticket_ttl_seconds=_as_int("COORDINATOR_READ_TICKET_TTL", 1800),
+        transfer_ticket_ttl_seconds=_as_int("COORDINATOR_TRANSFER_TICKET_TTL", 1800),
+        browse_access_pin=str(
+            os.environ.get("COORDINATOR_BROWSE_PIN", os.environ.get("STREAM_PIN", ""))
+        ).strip(),
         passcode_window_seconds=_as_int("COORDINATOR_PASSCODE_WINDOW_SECONDS", 300),
         pairing_code_ttl_seconds=_as_int("COORDINATOR_PAIRING_CODE_TTL", 600),
+        auto_join_enabled=_as_bool("COORDINATOR_AUTO_JOIN", True),
         sync_thread_tokens=max(8, min(_as_int("COORDINATOR_SYNC_THREAD_TOKENS", 64), 512)),
         search_executor_workers=max(4, min(_as_int("COORDINATOR_SEARCH_WORKERS", 16), 128)),
     )

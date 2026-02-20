@@ -237,6 +237,7 @@ def list_shares(
                 "read_only": share.read_only,
                 "permissions": sorted(permissions),
                 "device_online": _is_online(device),
+                "root_path": share.root_path if device.owner_principal_id == auth.principal_id else None,
             }
         )
     return {"shares": payload}

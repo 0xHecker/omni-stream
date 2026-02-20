@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import secrets
 from threading import Lock
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -75,11 +75,15 @@ def _clear_pairing_attempt_state(session_id: str) -> None:
 def start_pairing(
     body: PairingStartRequest,
     request: Request,
+    auto_join: bool = Query(default=False),
     db: Session = Depends(get_db),
 ) -> PairingStartResponse:
     config = load_config()
     has_principal = db.execute(select(Principal.id).limit(1)).first() is not None
-    if not has_principal:
+
+    auto_join_allowed = bool(auto_join) and bool(config.auto_join_enabled)
+    should_create_principal = (not has_principal) or auto_join_allowed
+    if should_create_principal:
         principal = Principal(display_name=body.display_name, public_key=body.public_key)
         db.add(principal)
         db.flush()
@@ -96,9 +100,10 @@ def start_pairing(
         db.add(client_device)
         db.flush()
         ensure_default_grants_for_principal(db, principal.id)
+        action_name = "principal_bootstrap" if not has_principal else "principal_auto_join"
         write_audit(
             db,
-            action="principal_bootstrap",
+            action=action_name,
             resource_type="principal",
             resource_id=principal.id,
             actor_principal_id=principal.id,

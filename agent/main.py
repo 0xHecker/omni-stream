@@ -5,6 +5,7 @@ import contextlib
 
 from anyio import to_thread
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from .config import load_config
 from .db import SessionLocal, init_db
@@ -53,6 +54,12 @@ async def _heartbeat_loop(config) -> None:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Stream Agent", version="1.0.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.on_event("startup")
     async def _startup() -> None:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import ipaddress
+import os
 from pathlib import Path
 
 from flask import (
@@ -18,6 +20,9 @@ from flask import (
     url_for,
 )
 from werkzeug.exceptions import HTTPException
+
+from shared.networking import discover_coordinators, local_ipv4_addresses, preferred_lan_ipv4
+from shared.runtime import env_int
 
 from .auth import require_pin
 from .settings_store import load_settings, save_settings, settings_path
@@ -38,7 +43,17 @@ from stream_server.services.file_service import (
 )
 
 web = Blueprint("web", __name__)
-API_PREFIXES = ("/list", "/search", "/stream", "/stream_transcode", "/thumbnail", "/get_adjacent_file", "/download", "/video_info")
+API_PREFIXES = (
+    "/list",
+    "/search",
+    "/stream",
+    "/stream_transcode",
+    "/thumbnail",
+    "/get_adjacent_file",
+    "/download",
+    "/video_info",
+    "/api/discovery",
+)
 
 
 def _is_setup_complete() -> bool:
@@ -48,6 +63,114 @@ def _is_setup_complete() -> bool:
 
 def _root_dir() -> Path:
     return Path(current_app.config["ROOT_DIR"]).resolve()
+
+
+def _is_lan_bind_host(host_value: str) -> bool:
+    host = str(host_value or "").strip().lower()
+    if not host:
+        return True
+    if host in {"0.0.0.0", "::"}:
+        return True
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        return False
+    return not host.startswith("127.")
+
+
+def _network_bootstrap_context() -> dict[str, object]:
+    settings = load_settings()
+    web_port = env_int("WEB_PORT", int(current_app.config.get("PORT", 5000)), minimum=1, maximum=65535)
+    coordinator_port = env_int("COORDINATOR_PORT", 7000, minimum=1, maximum=65535)
+    agent_port = env_int("AGENT_PORT", 7001, minimum=1, maximum=65535)
+    web_bind_host = os.environ.get("WEB_HOST", os.environ.get("HOST", "0.0.0.0")).strip() or "0.0.0.0"
+    coordinator_bind_host = os.environ.get("COORDINATOR_HOST", "0.0.0.0").strip() or "0.0.0.0"
+
+    lan_ip = preferred_lan_ipv4()
+    addresses = local_ipv4_addresses(include_loopback=False)
+    if lan_ip not in addresses and lan_ip != "127.0.0.1":
+        addresses = [lan_ip, *addresses]
+    if not addresses:
+        addresses = ["127.0.0.1"]
+
+    web_urls = [f"http://{ip}:{web_port}/" for ip in addresses]
+    coordinator_urls = [f"http://{ip}:{coordinator_port}" for ip in addresses]
+    agent_urls = [f"http://{ip}:{agent_port}" for ip in addresses]
+
+    default_coordinator_url = str(os.environ.get("STREAM_DEFAULT_COORDINATOR_URL", "")).strip().rstrip("/")
+    if not default_coordinator_url:
+        default_coordinator_url = coordinator_urls[0]
+
+    local_agent_device_id = str(os.environ.get("AGENT_DEVICE_ID", "")).strip()
+    if not local_agent_device_id:
+        local_agent_device_id = str(settings.get("agent_device_id") or "").strip()
+
+    return {
+        "primary_ip": addresses[0],
+        "primary_web_url": web_urls[0],
+        "default_coordinator_url": default_coordinator_url,
+        "web_urls": web_urls,
+        "coordinator_urls": coordinator_urls,
+        "agent_urls": agent_urls,
+        "local_agent_device_id": local_agent_device_id,
+        "web_bind_host": web_bind_host,
+        "coordinator_bind_host": coordinator_bind_host,
+        "web_lan_accessible": _is_lan_bind_host(web_bind_host),
+        "coordinator_lan_accessible": _is_lan_bind_host(coordinator_bind_host),
+    }
+
+
+def _is_local_request_address(remote_addr: str | None) -> bool:
+    raw = str(remote_addr or "").strip().split(",", 1)[0].strip()
+    if not raw:
+        return False
+    try:
+        parsed = ipaddress.ip_address(raw)
+    except ValueError:
+        return False
+
+    if parsed.version == 6 and getattr(parsed, "ipv4_mapped", None):
+        parsed = parsed.ipv4_mapped
+
+    if parsed.is_loopback:
+        return True
+
+    local_addrs = {addr.strip() for addr in local_ipv4_addresses(include_loopback=True)}
+    return str(parsed) in local_addrs
+
+
+def _network_session_defaults(*, include_identity: bool) -> dict[str, str]:
+    settings = load_settings()
+    default_coord = str(os.environ.get("STREAM_DEFAULT_COORDINATOR_URL", "")).strip().rstrip("/")
+    if not default_coord:
+        default_coord = str(settings.get("network_coordinator_url") or "").strip().rstrip("/")
+
+    principal_id = ""
+    client_device_id = ""
+    device_secret = ""
+    local_agent_device_id = ""
+    if include_identity:
+        principal_id = str(os.environ.get("STREAM_COORD_PRINCIPAL_ID", "")).strip()
+        if not principal_id:
+            principal_id = str(settings.get("network_principal_id") or "").strip()
+
+        client_device_id = str(os.environ.get("STREAM_COORD_CLIENT_DEVICE_ID", "")).strip()
+        if not client_device_id:
+            client_device_id = str(settings.get("network_client_device_id") or "").strip()
+
+        device_secret = str(os.environ.get("STREAM_COORD_DEVICE_SECRET", "")).strip()
+        if not device_secret:
+            device_secret = str(settings.get("network_device_secret") or "").strip()
+
+        local_agent_device_id = str(os.environ.get("AGENT_DEVICE_ID", "")).strip()
+        if not local_agent_device_id:
+            local_agent_device_id = str(settings.get("agent_device_id") or "").strip()
+
+    return {
+        "coordinator_url": default_coord,
+        "principal_id": principal_id,
+        "client_device_id": client_device_id,
+        "device_secret": device_secret,
+        "local_agent_device_id": local_agent_device_id,
+    }
 
 
 def _resolve_or_400(raw_path: str | None) -> Path:
@@ -126,6 +249,7 @@ def setup():
 
 
 @web.get("/api/choose_folder")
+@require_pin
 def choose_folder():
     try:
         import tkinter as tk
@@ -145,7 +269,30 @@ def choose_folder():
 @web.get("/")
 @require_pin
 def index():
-    return render_template("index.html", root_dir=str(_root_dir()))
+    session_defaults = _network_session_defaults(include_identity=_is_local_request_address(request.remote_addr))
+    return render_template(
+        "index.html",
+        root_dir=str(_root_dir()),
+        network_info=_network_bootstrap_context(),
+        network_session_defaults=session_defaults,
+    )
+
+
+@web.get("/api/discovery/coordinators")
+@require_pin
+def discover_coordinator_hosts():
+    port = env_int("COORDINATOR_PORT", 7000, minimum=1, maximum=65535)
+    discovered = discover_coordinators(port=port, timeout_seconds=0.16, max_workers=48, max_results=12)
+    bootstrap = _network_bootstrap_context()
+    coordinator_urls = [str(value).strip().rstrip("/") for value in bootstrap.get("coordinator_urls", []) if str(value).strip()]
+    default_url = str(os.environ.get("STREAM_DEFAULT_COORDINATOR_URL", "")).strip().rstrip("/")
+    all_candidates: list[str] = []
+    for candidate in [default_url, *coordinator_urls, *discovered]:
+        normalized = candidate.strip().rstrip("/")
+        if not normalized or normalized in all_candidates:
+            continue
+        all_candidates.append(normalized)
+    return jsonify({"coordinators": all_candidates, "default": default_url})
 
 
 @web.get("/list")

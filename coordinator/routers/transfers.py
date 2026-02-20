@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session, selectinload
 
 from shared.schemas import (
     PasscodeOpenRequest,
@@ -26,6 +27,7 @@ from ..services.transfer_views import transfer_to_dict
 
 router = APIRouter(prefix="/api/v1/transfers", tags=["transfers"])
 internal_router = APIRouter(prefix="/api/v1/internal/transfers", tags=["internal"])
+TERMINAL_TRANSFER_STATES = {"completed", "rejected", "expired", "failed", "cancelled"}
 
 
 def _utcnow() -> datetime:
@@ -40,7 +42,11 @@ def _get_receiver_owner(transfer: TransferRequest, db: Session) -> str:
 
 
 def _load_visible_transfer(transfer_id: str, auth: AuthContext, db: Session) -> TransferRequest:
-    transfer = db.get(TransferRequest, transfer_id)
+    transfer = db.execute(
+        select(TransferRequest)
+        .where(TransferRequest.id == transfer_id)
+        .options(selectinload(TransferRequest.items))
+    ).scalar_one_or_none()
     if not transfer:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transfer not found")
     receiver_owner = _get_receiver_owner(transfer, db)
@@ -73,6 +79,7 @@ async def create_transfer(
     require_permission(db, auth.principal_id, receiver_share, "request_send")
     transfer = TransferRequest(
         sender_principal_id=auth.principal_id,
+        sender_client_device_id=auth.client_device_id,
         receiver_device_id=receiver_device.id,
         receiver_share_id=receiver_share.id,
         state="pending_receiver_approval",
@@ -126,7 +133,11 @@ def list_transfers(
         select(AgentDevice.id).where(AgentDevice.owner_principal_id == auth.principal_id)
     ).scalars().all()
 
-    query = select(TransferRequest).order_by(TransferRequest.created_at.desc())
+    query = (
+        select(TransferRequest)
+        .options(selectinload(TransferRequest.items))
+        .order_by(TransferRequest.created_at.desc())
+    )
     if role == "incoming":
         query = query.where(TransferRequest.receiver_device_id.in_(incoming_device_ids))
     elif role == "outgoing":
@@ -140,6 +151,101 @@ def list_transfers(
         )
     transfers = db.execute(query.limit(200)).scalars().all()
     return {"transfers": [transfer_to_dict(item) for item in transfers]}
+
+
+@router.post("/history/clear")
+def clear_transfer_history(
+    auth: AuthContext = Depends(require_auth_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    incoming_device_ids = db.execute(
+        select(AgentDevice.id).where(AgentDevice.owner_principal_id == auth.principal_id)
+    ).scalars().all()
+
+    query = (
+        select(TransferRequest)
+        .options(selectinload(TransferRequest.items))
+        .where(TransferRequest.state.in_(TERMINAL_TRANSFER_STATES))
+        .where(
+            or_(
+                TransferRequest.sender_principal_id == auth.principal_id,
+                TransferRequest.receiver_device_id.in_(incoming_device_ids),
+            )
+        )
+    )
+    transfers = db.execute(query).scalars().all()
+    deleted = 0
+    for transfer in transfers:
+        db.delete(transfer)
+        deleted += 1
+    db.commit()
+    return {"deleted": deleted}
+
+
+@router.post("/pending/cancel")
+async def cancel_pending_transfers(
+    request: Request,
+    auth: AuthContext = Depends(require_auth_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    incoming_device_ids = db.execute(
+        select(AgentDevice.id).where(AgentDevice.owner_principal_id == auth.principal_id)
+    ).scalars().all()
+
+    query = (
+        select(TransferRequest)
+        .options(selectinload(TransferRequest.items))
+        .where(~TransferRequest.state.in_(TERMINAL_TRANSFER_STATES))
+        .where(
+            or_(
+                TransferRequest.sender_principal_id == auth.principal_id,
+                TransferRequest.receiver_device_id.in_(incoming_device_ids),
+            )
+        )
+    )
+    transfers = db.execute(query).scalars().all()
+    cancelled = 0
+    receiver_owner_by_transfer_id: dict[str, str] = {}
+    for transfer in transfers:
+        transfer.state = "cancelled"
+        transfer.reason = "Cancelled in bulk by user"
+        for item in transfer.items:
+            if item.state not in {"finalized", "completed", "rejected", "failed", "cancelled", "expired"}:
+                item.state = "cancelled"
+        cancelled += 1
+        try:
+            receiver_owner_by_transfer_id[transfer.id] = _get_receiver_owner(transfer, db)
+        except HTTPException:
+            receiver_owner_by_transfer_id[transfer.id] = ""
+
+    if cancelled:
+        write_audit(
+            db,
+            action="transfer_bulk_cancelled",
+            resource_type="transfer",
+            resource_id="bulk",
+            actor_principal_id=auth.principal_id,
+            request=request,
+            metadata={"cancelled_count": cancelled},
+        )
+    db.commit()
+
+    for transfer in transfers:
+        transfer_payload = transfer_to_dict(transfer)
+        target_principals = {transfer.sender_principal_id, receiver_owner_by_transfer_id.get(transfer.id, "")}
+        for principal_id in target_principals:
+            principal = str(principal_id or "").strip()
+            if not principal:
+                continue
+            await broker.publish(
+                principal,
+                {
+                    "type": "transfer_cancelled",
+                    "transfer": transfer_payload,
+                },
+            )
+
+    return {"cancelled": cancelled}
 
 
 @router.get("/{transfer_id}")
@@ -179,6 +285,14 @@ async def approve_transfer(
     config = load_config()
     set_transfer_passcode(db, config=config, transfer=transfer, passcode=body.passcode)
     transfer.state = "approved_pending_sender_passcode"
+    transfer.reason = json.dumps(
+        {
+            "kind": "receiver_preferences",
+            "destination_path": str(body.destination_path or "").strip(),
+            "auto_passcode": str(body.passcode or "").strip(),
+        },
+        separators=(",", ":"),
+    )
 
     write_audit(
         db,
@@ -319,34 +433,50 @@ async def update_transfer_item_state(
     transfer = db.get(TransferRequest, transfer_id)
     if not transfer:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transfer not found")
-    item = next((it for it in transfer.items if it.id == item_id), None)
+    if transfer.state in TERMINAL_TRANSFER_STATES:
+        return {"ok": True}
+    item = db.execute(
+        select(TransferItem).where(
+            TransferItem.id == item_id,
+            TransferItem.transfer_request_id == transfer_id,
+        )
+    ).scalar_one_or_none()
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transfer item not found")
     item.state = body.state
 
-    item_states = {it.state for it in transfer.items}
-    if item_states and item_states.issubset({"finalized", "completed"}):
+    state_rows = db.execute(
+        select(TransferItem.state, func.count())
+        .where(TransferItem.transfer_request_id == transfer_id)
+        .group_by(TransferItem.state)
+    ).all()
+    state_counts = {str(row[0]): int(row[1]) for row in state_rows}
+    total_items = sum(state_counts.values())
+    finalized_count = sum(state_counts.get(name, 0) for name in ("finalized", "completed"))
+    active_count = sum(state_counts.get(name, 0) for name in ("receiving", "staged", "committed"))
+
+    if total_items and finalized_count == total_items:
         transfer.state = "completed"
-    elif "receiving" in item_states or "committed" in item_states:
+    elif active_count > 0:
         transfer.state = "in_progress"
 
     db.commit()
     db.refresh(transfer)
-    await broker.publish(
-        transfer.sender_principal_id,
-        {
-            "type": "transfer_item_state",
-            "transfer": transfer_to_dict(transfer),
+    event_payload = {
+        "type": "transfer_item_state",
+        "transfer_id": transfer.id,
+        "transfer_state": transfer.state,
+        "item": {
+            "id": item.id,
+            "state": item.state,
         },
-    )
+        "updated_at": transfer.updated_at.isoformat(),
+    }
     receiver_owner = _get_receiver_owner(transfer, db)
-    await broker.publish(
-        receiver_owner,
-        {
-            "type": "transfer_item_state",
-            "transfer": transfer_to_dict(transfer),
-        },
-    )
+    for principal_id in {transfer.sender_principal_id, receiver_owner}:
+        if not str(principal_id).strip():
+            continue
+        await broker.publish(principal_id, event_payload)
     return {"ok": True}
 
 
@@ -370,7 +500,12 @@ def get_transfer_item_manifest(
     if transfer.receiver_device_id != x_agent_device_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Transfer does not target this agent")
 
-    item = next((it for it in transfer.items if it.id == item_id), None)
+    item = db.execute(
+        select(TransferItem).where(
+            TransferItem.id == item_id,
+            TransferItem.transfer_request_id == transfer_id,
+        )
+    ).scalar_one_or_none()
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transfer item not found")
 

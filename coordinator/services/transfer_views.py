@@ -7,6 +7,7 @@ def transfer_to_dict(transfer: TransferRequest) -> dict:
     return {
         "id": transfer.id,
         "sender_principal_id": transfer.sender_principal_id,
+        "sender_client_device_id": transfer.sender_client_device_id,
         "receiver_device_id": transfer.receiver_device_id,
         "receiver_share_id": transfer.receiver_share_id,
         "state": transfer.state,
@@ -27,4 +28,3 @@ def item_to_dict(item: TransferItem) -> dict:
         "mime_type": item.mime_type,
         "state": item.state,
     }
-

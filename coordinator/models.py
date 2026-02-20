@@ -113,12 +113,28 @@ class TransferRequest(Base):
     __tablename__ = "transfer_requests"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_id)
-    sender_principal_id: Mapped[str] = mapped_column(String(36), ForeignKey("principals.id"), nullable=False)
-    receiver_device_id: Mapped[str] = mapped_column(String(36), ForeignKey("agent_devices.id"), nullable=False)
+    sender_principal_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("principals.id"),
+        nullable=False,
+        index=True,
+    )
+    sender_client_device_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("client_devices.id"),
+        nullable=True,
+        index=True,
+    )
+    receiver_device_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("agent_devices.id"),
+        nullable=False,
+        index=True,
+    )
     receiver_share_id: Mapped[str] = mapped_column(String(36), ForeignKey("shares.id"), nullable=False)
-    state: Mapped[str] = mapped_column(String(40), default="pending_receiver_approval", nullable=False)
+    state: Mapped[str] = mapped_column(String(40), default="pending_receiver_approval", nullable=False, index=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
 
@@ -134,7 +150,12 @@ class TransferItem(Base):
     __tablename__ = "transfer_items"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_id)
-    transfer_request_id: Mapped[str] = mapped_column(String(36), ForeignKey("transfer_requests.id"), nullable=False)
+    transfer_request_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("transfer_requests.id"),
+        nullable=False,
+        index=True,
+    )
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)

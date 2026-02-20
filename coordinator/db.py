@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import load_config
@@ -33,6 +33,29 @@ def init_db() -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    if _is_sqlite:
+        _ensure_sqlite_runtime_schema()
+
+
+def _ensure_sqlite_runtime_schema() -> None:
+    index_statements = (
+        "CREATE INDEX IF NOT EXISTS ix_transfer_requests_sender_principal_id ON transfer_requests (sender_principal_id)",
+        "CREATE INDEX IF NOT EXISTS ix_transfer_requests_sender_client_device_id ON transfer_requests (sender_client_device_id)",
+        "CREATE INDEX IF NOT EXISTS ix_transfer_requests_receiver_device_id ON transfer_requests (receiver_device_id)",
+        "CREATE INDEX IF NOT EXISTS ix_transfer_requests_state ON transfer_requests (state)",
+        "CREATE INDEX IF NOT EXISTS ix_transfer_requests_created_at ON transfer_requests (created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_transfer_items_transfer_request_id ON transfer_items (transfer_request_id)",
+    )
+    with engine.begin() as connection:
+        columns = {
+            str(row[1]).strip().lower()
+            for row in connection.execute(text("PRAGMA table_info('transfer_requests')")).fetchall()
+        }
+        if "sender_client_device_id" not in columns:
+            connection.execute(text("ALTER TABLE transfer_requests ADD COLUMN sender_client_device_id VARCHAR(36)"))
+
+        for statement in index_statements:
+            connection.execute(text(statement))
 
 
 def get_db() -> Generator[Session, None, None]:

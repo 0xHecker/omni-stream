@@ -43,6 +43,16 @@ def pick_local_tcp_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def pick_unique_ports(count: int) -> list[int]:
+    ports: list[int] = []
+    while len(ports) < max(1, count):
+        candidate = pick_local_tcp_port()
+        if candidate in ports:
+            continue
+        ports.append(candidate)
+    return ports
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke-test the packaged stream-local binary")
     parser.add_argument("--runner-os", required=True, help="GitHub runner OS value")
@@ -54,11 +64,14 @@ def main() -> int:
 
     env = os.environ.copy()
     smoke_settings_dir = Path(tempfile.mkdtemp(prefix="stream-local-smoke-"))
-    selected_port = pick_local_tcp_port()
+    web_port, coordinator_port, agent_port = pick_unique_ports(3)
     env["STREAM_NO_BROWSER"] = "1"
     env["HOST"] = "127.0.0.1"
-    env["PORT"] = str(selected_port)
-    env["WEB_PORT"] = str(selected_port)
+    env["STREAM_SERVICE"] = "all"
+    env["PORT"] = str(web_port)
+    env["WEB_PORT"] = str(web_port)
+    env["COORDINATOR_PORT"] = str(coordinator_port)
+    env["AGENT_PORT"] = str(agent_port)
     env["STREAM_SETTINGS_DIR"] = str(smoke_settings_dir)
 
     proc = subprocess.Popen(

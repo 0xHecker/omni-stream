@@ -54,6 +54,46 @@ def _build_file_urls(agent_base_url: str, share_id: str, path: str, ticket: str)
     }
 
 
+def _build_access_descriptor(
+    *,
+    device: AgentDevice,
+    share: Share,
+    permissions: set[str],
+    ticket: str,
+    ticket_ttl_seconds: int,
+) -> dict:
+    return {
+        "device_id": device.id,
+        "share_id": share.id,
+        "agent_base_url": device.base_url.rstrip("/"),
+        "ticket": ticket,
+        "permissions": sorted(permissions),
+        "can_download": "download" in permissions,
+        "expires_in": max(1, int(ticket_ttl_seconds)),
+    }
+
+
+def _prepare_items_for_client(
+    items: list[dict],
+    *,
+    device: AgentDevice,
+    share: Share,
+    permissions: set[str],
+    ticket: str,
+    include_urls: bool,
+) -> list[dict]:
+    prepared: list[dict] = []
+    for raw_item in items:
+        item = raw_item if isinstance(raw_item, dict) else dict(raw_item)
+        if include_urls and not item.get("is_dir"):
+            urls = _build_file_urls(device.base_url, share.id, str(item.get("path") or ""), ticket)
+            item["stream_url"] = urls["stream_url"]
+            if "download" in permissions:
+                item["download_url"] = urls["download_url"]
+        prepared.append(item)
+    return prepared
+
+
 def _utcnow() -> datetime:
     return datetime.now(tz=timezone.utc)
 
@@ -70,16 +110,30 @@ def _is_online(device: AgentDevice) -> bool:
     return device.online_state and (_utcnow() - _as_utc(device.last_seen)) <= timedelta(seconds=90)
 
 
+def _require_browse_access_pin(config, access_pin: str | None) -> None:
+    expected_pin = str(getattr(config, "browse_access_pin", "") or "").strip()
+    if not expected_pin:
+        return
+    provided_pin = str(access_pin or "").strip()
+    if not provided_pin:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Access PIN required")
+    if provided_pin != expected_pin:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid access PIN")
+
+
 @router.get("/list")
 def list_files(
     device_id: str,
     share_id: str,
     path: str = "",
     max_results: int = Query(default=300, ge=50, le=5000),
+    compact: bool = Query(default=False),
+    access_pin: str | None = Query(default=None, max_length=32),
     auth: AuthContext = Depends(require_auth_context),
     db: Session = Depends(get_db),
 ) -> dict:
     config = _CONFIG
+    _require_browse_access_pin(config, access_pin)
     share = db.get(Share, share_id)
     if not share:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
@@ -97,16 +151,25 @@ def list_files(
     ticket = issue_read_ticket(config, auth.principal_id, share.id, permissions)
     payload = list_share(device.base_url, share.id, path, ticket, max_results=max_results)
     items = payload.get("items", [])
-    for item in items:
-        if item.get("is_dir"):
-            continue
-        urls = _build_file_urls(device.base_url, share.id, str(item.get("path") or ""), ticket)
-        item["stream_url"] = urls["stream_url"]
-        if "download" in permissions:
-            item["download_url"] = urls["download_url"]
+    payload["items"] = _prepare_items_for_client(
+        items,
+        device=device,
+        share=share,
+        permissions=permissions,
+        ticket=ticket,
+        include_urls=not compact,
+    )
     payload["device_id"] = device.id
     payload["share_id"] = share.id
     payload["permissions"] = sorted(permissions)
+    if compact:
+        payload["access"] = _build_access_descriptor(
+            device=device,
+            share=share,
+            permissions=permissions,
+            ticket=ticket,
+            ticket_ttl_seconds=config.read_ticket_ttl_seconds,
+        )
     return payload
 
 
@@ -121,10 +184,13 @@ def search_files(
     max_results_per_share: int = Query(default=200, ge=10, le=1000),
     max_results_total: int = Query(default=800, ge=20, le=5000),
     timeout_budget_ms: int = Query(default=6000, ge=500, le=20000),
+    compact: bool = Query(default=False),
+    access_pin: str | None = Query(default=None, max_length=32),
     auth: AuthContext = Depends(require_auth_context),
     db: Session = Depends(get_db),
 ) -> dict:
     config = _CONFIG
+    _require_browse_access_pin(config, access_pin)
     if device_id and share_id:
         share = db.get(Share, share_id)
         if not share:
@@ -152,16 +218,25 @@ def search_files(
             max_results=min(max_results_per_share, max_results_total),
         )
         items = payload.get("items", [])
-        for item in items:
-            if item.get("is_dir"):
-                continue
-            urls = _build_file_urls(device.base_url, share.id, str(item.get("path") or ""), ticket)
-            item["stream_url"] = urls["stream_url"]
-            if "download" in permissions:
-                item["download_url"] = urls["download_url"]
+        payload["items"] = _prepare_items_for_client(
+            items,
+            device=device,
+            share=share,
+            permissions=permissions,
+            ticket=ticket,
+            include_urls=not compact,
+        )
         payload["device_id"] = device.id
         payload["share_id"] = share.id
         payload["permissions"] = sorted(permissions)
+        if compact:
+            payload["access"] = _build_access_descriptor(
+                device=device,
+                share=share,
+                permissions=permissions,
+                ticket=ticket,
+                ticket_ttl_seconds=config.read_ticket_ttl_seconds,
+            )
         return payload
 
     rows = db.execute(
@@ -194,6 +269,7 @@ def search_files(
             break
 
     results: list[dict] = []
+    access_map: dict[str, dict] = {}
     errors: list[dict] = []
     truncated = False
 
@@ -216,13 +292,22 @@ def search_files(
             item["share_id"] = share.id
             item["share_name"] = share.name
             item["device_name"] = device.name
-            if not item.get("is_dir"):
+            if (not compact) and (not item.get("is_dir")):
                 urls = _build_file_urls(device.base_url, share.id, str(item.get("path") or ""), ticket)
                 item["stream_url"] = urls["stream_url"]
                 if "download" in permissions:
                     item["download_url"] = urls["download_url"]
             prepared_items.append(item)
-        return {"items": prepared_items, "truncated": payload.get("truncated", False)}
+        response_payload = {"items": prepared_items, "truncated": payload.get("truncated", False)}
+        if compact:
+            response_payload["access"] = _build_access_descriptor(
+                device=device,
+                share=share,
+                permissions=permissions,
+                ticket=ticket,
+                ticket_ttl_seconds=config.read_ticket_ttl_seconds,
+            )
+        return response_payload
 
     if not candidate_shares:
         return {
@@ -263,6 +348,9 @@ def search_files(
                     continue
                 if payload.get("truncated"):
                     truncated = True
+                access_payload = payload.get("access")
+                if compact and isinstance(access_payload, dict):
+                    access_map[f"{device.id}:{share.id}"] = access_payload
                 for item in payload.get("items", []):
                     results.append(item)
                     if len(results) >= max_results_total:
@@ -278,7 +366,7 @@ def search_files(
             future.cancel()
 
     results.sort(key=lambda item: (not item.get("is_dir", False), str(item.get("path", "")).casefold()))
-    return {
+    response_payload = {
         "query": q,
         "base_path": path,
         "recursive": recursive,
@@ -287,3 +375,6 @@ def search_files(
         "truncated": truncated,
         "errors": errors,
     }
+    if compact and access_map:
+        response_payload["access_map"] = access_map
+    return response_payload

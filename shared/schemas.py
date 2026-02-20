@@ -58,11 +58,12 @@ class TransferItemInput(BaseModel):
 class TransferCreateRequest(BaseModel):
     receiver_device_id: str
     receiver_share_id: str
-    items: list[TransferItemInput] = Field(min_length=1, max_length=50)
+    items: list[TransferItemInput] = Field(min_length=1, max_length=200)
 
 
 class TransferApproveRequest(BaseModel):
     passcode: str = Field(pattern=r"^\d{4}$")
+    destination_path: str = Field(default="", max_length=400)
 
 
 class TransferRejectRequest(BaseModel):
