@@ -1,6 +1,6 @@
 [project]
 name = "stream-local-files-on-same-network"
-version = "0.1.6"
+version = "0.1.7"
 description = "Distributed LAN file access with coordinator + device agents."
 readme = "README.md"
 requires-python = ">=3.11"
