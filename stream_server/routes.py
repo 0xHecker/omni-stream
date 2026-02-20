@@ -41,6 +41,19 @@ from stream_server.services.file_service import (
     get_video_info,
     to_client_path,
 )
+from stream_server.services.hub_proxy import (
+    active_remote_hub,
+    clear_browser_hub_clients,
+    list_hubs as list_hubs_payload,
+    lock_hub as lock_hub_payload,
+    proxy_remote_binary,
+    proxy_remote_json,
+    public_hub_meta,
+    request_query_params,
+    reset_active_hub,
+    select_hub as select_hub_payload,
+    unlock_hub as unlock_hub_payload,
+)
 
 web = Blueprint("web", __name__)
 API_PREFIXES = (
@@ -53,8 +66,9 @@ API_PREFIXES = (
     "/download",
     "/video_info",
     "/api/discovery",
+    "/api/hub",
+    "/api/hubs",
 )
-
 
 def _is_setup_complete() -> bool:
     pin = str(current_app.config.get("PIN", "")).strip()
@@ -295,9 +309,46 @@ def discover_coordinator_hosts():
     return jsonify({"coordinators": all_candidates, "default": default_url})
 
 
+@web.get("/api/hub/meta")
+def hub_meta():
+    return jsonify(public_hub_meta(request.url_root))
+
+
+@web.get("/api/hubs")
+@require_pin
+def list_hubs():
+    refresh = (request.args.get("refresh") or "").strip().lower() in {"1", "true", "yes", "on"}
+    return jsonify(list_hubs_payload(refresh=refresh))
+
+
+@web.post("/api/hubs/select")
+@require_pin
+def select_hub():
+    payload = request.get_json(silent=True) or {}
+    return jsonify(select_hub_payload(payload))
+
+
+@web.post("/api/hubs/unlock")
+@require_pin
+def unlock_hub():
+    payload = request.get_json(silent=True) or {}
+    return jsonify(unlock_hub_payload(payload))
+
+
+@web.post("/api/hubs/lock")
+@require_pin
+def lock_hub():
+    payload = request.get_json(silent=True) or {}
+    return jsonify(lock_hub_payload(payload))
+
+
 @web.get("/list")
 @require_pin
 def list_files():
+    remote_hub = active_remote_hub()
+    if remote_hub is not None:
+        return proxy_remote_json(remote_hub, "/list", params=request_query_params(request.query_string))
+
     target = _resolve_or_400(request.args.get("path"))
     if not target.exists():
         abort(404, description="Directory not found")
@@ -319,6 +370,10 @@ def list_files():
 @web.get("/search")
 @require_pin
 def search_files():
+    remote_hub = active_remote_hub()
+    if remote_hub is not None:
+        return proxy_remote_json(remote_hub, "/search", params=request_query_params(request.query_string))
+
     query = (request.args.get("q") or "").strip()
     target = _resolve_or_400(request.args.get("path"))
     if not target.exists():
@@ -359,6 +414,15 @@ def search_files():
 @web.get("/stream")
 @require_pin
 def stream_file():
+    remote_hub = active_remote_hub()
+    if remote_hub is not None:
+        return proxy_remote_binary(
+            remote_hub,
+            "/stream",
+            params=request_query_params(request.query_string),
+            request_headers=request.headers,
+        )
+
     target = _resolve_or_400(request.args.get("path"))
     if not target.exists() or not target.is_file():
         abort(404, description="File not found")
@@ -371,6 +435,15 @@ def stream_file():
 @web.get("/download")
 @require_pin
 def download_file():
+    remote_hub = active_remote_hub()
+    if remote_hub is not None:
+        return proxy_remote_binary(
+            remote_hub,
+            "/download",
+            params=request_query_params(request.query_string),
+            request_headers=request.headers,
+        )
+
     target = _resolve_or_400(request.args.get("path"))
     if not target.exists() or not target.is_file():
         abort(404, description="File not found")
@@ -386,6 +459,15 @@ def download_file():
 @web.get("/stream_transcode")
 @require_pin
 def stream_transcoded_video():
+    remote_hub = active_remote_hub()
+    if remote_hub is not None:
+        return proxy_remote_binary(
+            remote_hub,
+            "/stream_transcode",
+            params=request_query_params(request.query_string),
+            request_headers=request.headers,
+        )
+
     target = _resolve_or_400(request.args.get("path"))
     if not target.exists() or not target.is_file():
         abort(404, description="File not found")
@@ -411,6 +493,10 @@ def stream_transcoded_video():
 @web.get("/video_info")
 @require_pin
 def video_info():
+    remote_hub = active_remote_hub()
+    if remote_hub is not None:
+        return proxy_remote_json(remote_hub, "/video_info", params=request_query_params(request.query_string))
+
     target = _resolve_or_400(request.args.get("path"))
     if not target.exists() or not target.is_file():
         abort(404, description="File not found")
@@ -423,6 +509,10 @@ def video_info():
 @web.get("/get_adjacent_file")
 @require_pin
 def adjacent_file():
+    remote_hub = active_remote_hub()
+    if remote_hub is not None:
+        return proxy_remote_json(remote_hub, "/get_adjacent_file", params=request_query_params(request.query_string))
+
     direction = (request.args.get("direction") or "next").lower()
     if direction not in {"next", "prev"}:
         abort(400, description="Direction must be 'next' or 'prev'")
@@ -463,6 +553,15 @@ def adjacent_file():
 @web.get("/thumbnail")
 @require_pin
 def thumbnail():
+    remote_hub = active_remote_hub()
+    if remote_hub is not None:
+        return proxy_remote_binary(
+            remote_hub,
+            "/thumbnail",
+            params=request_query_params(request.query_string),
+            request_headers=request.headers,
+        )
+
     target = _resolve_or_400(request.args.get("path"))
     if not target.exists():
         abort(404)
@@ -506,6 +605,7 @@ def login():
         submitted_pin = request.form.get("pin", "")
         if submitted_pin == current_app.config["PIN"]:
             session["authenticated"] = True
+            reset_active_hub()
             next_path = request.args.get("next")
             if next_path and next_path.startswith("/"):
                 return redirect(next_path)
@@ -517,5 +617,6 @@ def login():
 
 @web.get("/logout")
 def logout():
+    clear_browser_hub_clients()
     session.clear()
     return redirect(url_for("web.login"))

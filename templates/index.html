@@ -36,6 +36,18 @@
   </header>
 
   <main class="container">
+    <section id="device-selector-row" class="device-selector-row" aria-label="Device selector">
+      <div class="device-selector-main">
+        <div class="device-selector-head">
+          <button id="device-back" class="network-refresh hidden" type="button">Back to Devices</button>
+          <button id="device-refresh" class="network-refresh" type="button">Refresh Devices</button>
+        </div>
+        <p id="device-selector-title" class="device-selector-title">Devices</p>
+        <p id="device-selector-subtitle" class="device-selector-subtitle">Choose a device folder to browse files.</p>
+      </div>
+      <div id="device-chip-list" class="device-chip-list"></div>
+    </section>
+
     <section class="controls-card">
       <nav aria-label="breadcrumb">
         <ol id="breadcrumb" class="breadcrumb"></ol>
@@ -167,6 +179,30 @@
         <button id="incoming-transfer-reject" type="button">Reject</button>
         <button id="incoming-transfer-approve" type="button" class="primary">Accept</button>
       </div>
+    </div>
+  </div>
+
+  <div id="device-pin-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="device-pin-title">
+    <div class="modal-content device-pin-modal-content">
+      <div class="modal-topbar">
+        <div class="network-info-title-wrap">
+          <h2 id="device-pin-title" class="network-info-title">Unlock Device</h2>
+          <p class="network-info-subtitle">Enter PIN for <strong id="device-pin-device-name">Device</strong>.</p>
+        </div>
+        <button id="device-pin-close" class="close-btn" type="button" aria-label="Close">x</button>
+      </div>
+      <form id="device-pin-form" class="device-pin-form">
+        <div class="field">
+          <label for="device-pin-input">PIN</label>
+          <input id="device-pin-input" type="password" inputmode="numeric" autocomplete="one-time-code" maxlength="12"
+            placeholder="Enter PIN" />
+        </div>
+        <p id="device-pin-error" class="network-status error hidden" role="alert"></p>
+        <div class="action-row device-pin-actions">
+          <button type="button" id="device-pin-cancel">Cancel</button>
+          <button type="submit" class="primary">Unlock</button>
+        </div>
+      </form>
     </div>
   </div>
 

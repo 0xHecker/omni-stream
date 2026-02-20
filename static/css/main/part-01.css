@@ -245,6 +245,76 @@ body::before {
   padding-block: 1rem 1.5rem;
 }
 
+.device-selector-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+  padding: 0.85rem;
+  margin-bottom: 0.82rem;
+  animation: riseIn 0.45s ease both;
+}
+
+.device-selector-main {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.device-selector-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.device-selector-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.device-selector-subtitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.device-chip-list {
+  margin-top: 0.6rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.device-chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-elevated);
+  color: var(--text);
+  padding: 0.38rem 0.68rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.device-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  transform: translateY(-1px);
+}
+
+.device-chip.active {
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  border-color: transparent;
+  color: #fff;
+}
+
+.device-chip.locked {
+  border-style: dashed;
+}
+
 .controls-card {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);

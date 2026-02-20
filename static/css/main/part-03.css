@@ -234,6 +234,35 @@
   justify-content: flex-end;
 }
 
+.device-pin-modal-content {
+  width: min(460px, 96vw);
+}
+
+.device-pin-form {
+  display: grid;
+  gap: 0.68rem;
+  margin-top: 0.5rem;
+}
+
+.device-pin-actions {
+  justify-content: flex-end;
+}
+
+.device-pin-form input[type="password"],
+.device-pin-form input[type="text"] {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-elevated);
+  color: var(--text);
+  font: inherit;
+  padding: 0.6rem 0.75rem;
+}
+
+.device-pin-form input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 65%, #fff);
+  outline-offset: 1px;
+}
+
 .preview-modal-info {
   flex: 1;
   display: flex;

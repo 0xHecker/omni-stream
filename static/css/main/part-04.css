@@ -259,6 +259,14 @@
     grid-template-columns: 1fr;
   }
 
+  .device-selector-head {
+    align-items: stretch;
+  }
+
+  .device-chip-list {
+    gap: 0.35rem;
+  }
+
   .search-option {
     justify-self: flex-start;
   }
@@ -301,6 +309,18 @@
   .modal-content {
     padding: 0.64rem;
     max-height: min(94vh, 100dvh - 0.8rem);
+  }
+
+  .device-pin-modal-content {
+    width: min(96vw, 96vw);
+  }
+
+  .device-pin-actions {
+    width: 100%;
+  }
+
+  .device-pin-actions button {
+    flex: 1;
   }
 
   .modal-nav {

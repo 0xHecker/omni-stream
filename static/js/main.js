@@ -1,6 +1,7 @@
 import { createApiClient } from "./modules/api.js";
 import { createNetworkController } from "./modules/network.js";
 import { createPreviewController } from "./modules/preview.js";
+import { createHubExplorer } from "./modules/hub_explorer.js";
 import { renderBreadcrumb, renderFileList } from "./modules/ui.js";
 import { debounce, normalizePath } from "./modules/utils.js";
 
@@ -11,6 +12,9 @@ const state = {
   fileRequestId: 0,
   fileRequestController: null,
   adjacentRequestController: null,
+  hubs: [],
+  activeHubId: "",
+  pinTargetHubId: "",
 };
 
 const dom = {};
@@ -30,6 +34,20 @@ document.addEventListener("DOMContentLoaded", () => {
   dom.searchRecursive = document.getElementById("search-recursive");
   dom.searchClear = document.getElementById("search-clear");
   dom.emptyState = document.getElementById("empty-state");
+  dom.deviceSelectorRow = document.getElementById("device-selector-row");
+  dom.deviceSelectorTitle = document.getElementById("device-selector-title");
+  dom.deviceSelectorSubtitle = document.getElementById("device-selector-subtitle");
+  dom.deviceChipList = document.getElementById("device-chip-list");
+  dom.deviceBack = document.getElementById("device-back");
+  dom.deviceRefresh = document.getElementById("device-refresh");
+  dom.devicePinModal = document.getElementById("device-pin-modal");
+  dom.devicePinClose = document.getElementById("device-pin-close");
+  dom.devicePinCancel = document.getElementById("device-pin-cancel");
+  dom.devicePinForm = document.getElementById("device-pin-form");
+  dom.devicePinInput = document.getElementById("device-pin-input");
+  dom.devicePinError = document.getElementById("device-pin-error");
+  dom.devicePinName = document.getElementById("device-pin-device-name");
+
   dom.networkShell = document.getElementById("network-shell");
   dom.networkRefresh = document.getElementById("network-refresh");
   dom.coordClearSettings = document.getElementById("coord-reset-session");
@@ -118,14 +136,37 @@ document.addEventListener("DOMContentLoaded", () => {
     })
     : null;
 
-  bindEvents();
+  function clearPaginationControls() {
+    const paginationControls = dom.fileList.nextElementSibling;
+    if (paginationControls && paginationControls.classList.contains("pagination-controls")) {
+      paginationControls.remove();
+    }
+  }
+
+  const hubExplorer = createHubExplorer({
+    api,
+    dom,
+    state,
+    preview,
+    renderBreadcrumb,
+    renderFileList,
+    showStatus,
+    updateEmptyState,
+    clearPaginationControls,
+    onLoadDirectory: loadDirectory,
+  });
+
   restoreTheme();
-  loadDirectory("");
   setupScrollTop();
+  bindEvents();
 
   if (network) {
     network.init();
   }
+
+  hubExplorer.init().catch((error) => {
+    showStatus(error?.message || "Unable to initialize device explorer", true);
+  });
 
   function setupScrollTop() {
     let btn = document.getElementById("scroll-to-top");
@@ -158,6 +199,10 @@ document.addEventListener("DOMContentLoaded", () => {
         closeNetworkInfoModal();
         return;
       }
+      if (event.key === "Escape" && dom.devicePinModal && !dom.devicePinModal.classList.contains("hidden")) {
+        hubExplorer.closePinModal();
+        return;
+      }
       preview.handleKeyDown(event);
     });
 
@@ -172,6 +217,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     dom.searchInput.addEventListener("input", () => {
+      if (hubExplorer.isDeviceRootMode()) {
+        return;
+      }
       const value = dom.searchInput.value.trim();
       dom.searchClear.classList.toggle("hidden", value.length === 0);
       state.searchQuery = value;
@@ -179,18 +227,100 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     dom.searchRecursive.addEventListener("change", () => {
-      if (!state.searchQuery) {
+      if (hubExplorer.isDeviceRootMode() || !state.searchQuery) {
         return;
       }
       runSearchOrBrowse();
     });
 
     dom.searchClear.addEventListener("click", () => {
-      dom.searchInput.value = "";
-      state.searchQuery = "";
-      dom.searchClear.classList.add("hidden");
+      if (hubExplorer.isDeviceRootMode()) {
+        return;
+      }
+      hubExplorer.clearSearchInput();
       runSearchOrBrowse();
     });
+
+    if (dom.deviceBack) {
+      dom.deviceBack.addEventListener("click", async () => {
+        try {
+          await hubExplorer.returnToDeviceRoot();
+        } catch (error) {
+          showStatus(error?.message || "Failed to return to device root", true);
+        }
+      });
+    }
+
+    if (dom.deviceRefresh) {
+      dom.deviceRefresh.addEventListener("click", async () => {
+        try {
+          await hubExplorer.refreshHubState({ refresh: true });
+          if (hubExplorer.isDeviceRootMode()) {
+            hubExplorer.renderDeviceRoot();
+          } else {
+            await loadDirectory(state.currentPath || "");
+          }
+          showStatus("Devices refreshed.", false);
+        } catch (error) {
+          showStatus(error?.message || "Failed to refresh devices", true);
+        }
+      });
+    }
+
+    if (dom.deviceChipList) {
+      dom.deviceChipList.addEventListener("click", async (event) => {
+        const button = event.target.closest("button[data-hub-id]");
+        if (!button) {
+          return;
+        }
+        const hubId = String(button.dataset.hubId || "").trim().toLowerCase();
+        if (!hubId) {
+          return;
+        }
+        const hub = hubExplorer.getHubById(hubId);
+        if (!hub) {
+          return;
+        }
+        try {
+          if (hub.locked) {
+            hubExplorer.openPinModal(hub);
+            return;
+          }
+          await hubExplorer.enterHub(hub.id);
+        } catch (error) {
+          showStatus(error?.message || "Unable to open selected device", true);
+        }
+      });
+    }
+
+    if (dom.devicePinClose) {
+      dom.devicePinClose.addEventListener("click", () => {
+        hubExplorer.closePinModal();
+      });
+    }
+    if (dom.devicePinCancel) {
+      dom.devicePinCancel.addEventListener("click", () => {
+        hubExplorer.closePinModal();
+      });
+    }
+    if (dom.devicePinModal) {
+      dom.devicePinModal.addEventListener("click", (event) => {
+        if (event.target === dom.devicePinModal) {
+          hubExplorer.closePinModal();
+        }
+      });
+    }
+    if (dom.devicePinInput) {
+      dom.devicePinInput.addEventListener("input", () => {
+        if (dom.devicePinError) {
+          dom.devicePinError.classList.add("hidden");
+          dom.devicePinError.textContent = "";
+        }
+      });
+    }
+    if (dom.devicePinForm) {
+      dom.devicePinForm.addEventListener("submit", hubExplorer.submitPinUnlock);
+    }
 
     dom.copyUrlButtons.forEach((button) => {
       button.addEventListener("click", async () => {
@@ -223,6 +353,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   async function runSearchOrBrowse() {
+    if (hubExplorer.isDeviceRootMode()) {
+      hubExplorer.renderDeviceRoot();
+      return;
+    }
     const query = state.searchQuery.trim();
     if (!query) {
       await loadDirectory(state.currentPath);
@@ -248,6 +382,11 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   async function loadDirectory(path = "", page = 1) {
+    if (hubExplorer.isDeviceRootMode()) {
+      hubExplorer.renderDeviceRoot();
+      return;
+    }
+
     const { requestId, signal } = startFileRequest();
     try {
       const data = await api.listFiles(path, { signal, maxResults: 400, page });
@@ -260,10 +399,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
       state.currentPath = normalizePath(data.current_path || "");
       state.searchMode = false;
+      hubExplorer.setSearchEnabled(true);
 
       renderBreadcrumb(dom.breadcrumb, state.currentPath, async (targetPath) => {
         await loadDirectory(targetPath);
       });
+      const activeHub = hubExplorer.getHubById(state.activeHubId);
+      hubExplorer.setBreadcrumbRootLabel(activeHub?.name || "Device");
+
       renderFileList(dom.fileList, data.items || [], {
         onOpenDirectory: async (targetPath) => {
           await loadDirectory(targetPath);
@@ -273,13 +416,9 @@ document.addEventListener("DOMContentLoaded", () => {
         },
       });
 
-      // Pagination setup
-      let paginationControls = dom.fileList.nextElementSibling;
-      if (paginationControls && paginationControls.classList.contains("pagination-controls")) {
-        paginationControls.remove();
-      }
+      clearPaginationControls();
       if (data.total_pages > 1) {
-        paginationControls = document.createElement("div");
+        const paginationControls = document.createElement("div");
         paginationControls.className = "pagination-controls";
 
         const prevBtn = document.createElement("button");
@@ -308,11 +447,19 @@ document.addEventListener("DOMContentLoaded", () => {
       if (isAbortError(error)) {
         return;
       }
-      showStatus(error.message || "Failed to load files", true);
+      const message = error?.message || "Failed to load files";
+      if (String(message).toLowerCase().includes("pin expired")) {
+        await hubExplorer.refreshHubState({ refresh: true });
+        hubExplorer.renderDeviceRoot();
+      }
+      showStatus(message, true);
     }
   }
 
   async function runSearch(query) {
+    if (hubExplorer.isDeviceRootMode()) {
+      return;
+    }
     const { requestId, signal } = startFileRequest();
     try {
       const data = await api.searchFiles({
@@ -333,11 +480,12 @@ document.addEventListener("DOMContentLoaded", () => {
       renderBreadcrumb(dom.breadcrumb, state.currentPath, async (targetPath) => {
         await loadDirectory(targetPath);
       });
+      const activeHub = hubExplorer.getHubById(state.activeHubId);
+      hubExplorer.setBreadcrumbRootLabel(activeHub?.name || "Device");
+
       renderFileList(dom.fileList, data.items || [], {
         onOpenDirectory: async (targetPath) => {
-          dom.searchInput.value = "";
-          state.searchQuery = "";
-          dom.searchClear.classList.add("hidden");
+          hubExplorer.clearSearchInput();
           await loadDirectory(targetPath);
         },
         onOpenFile: async (item) => {
@@ -355,13 +503,13 @@ document.addEventListener("DOMContentLoaded", () => {
       if (isAbortError(error)) {
         return;
       }
-      showStatus(error.message || "Search failed", true);
+      showStatus(error?.message || "Search failed", true);
     }
   }
 
   async function navigateAdjacent(direction) {
     const currentFilePath = preview.getCurrentFilePath();
-    if (!currentFilePath) {
+    if (!currentFilePath || hubExplorer.isDeviceRootMode()) {
       return;
     }
 
@@ -381,7 +529,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (isAbortError(error)) {
         return;
       }
-      showStatus(error.message || "Failed to navigate file", true);
+      showStatus(error?.message || "Failed to navigate file", true);
     }
   }
 
@@ -406,7 +554,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (title && text) {
       if (mode === "search") {
         title.textContent = "No matching files";
-        text.textContent = `No results found for \"${query}\". Try a shorter term or disable recursive filtering.`;
+        text.textContent = `No results found for "${query}". Try a shorter term or disable recursive filtering.`;
+      } else if (mode === "hubs") {
+        title.textContent = "No devices found";
+        text.textContent = "No LAN devices are available right now. Refresh and try again.";
       } else {
         title.textContent = "No files in this folder";
         text.textContent = "This directory is currently empty. Move up one level or switch folders.";

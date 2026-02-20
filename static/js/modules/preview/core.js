@@ -268,6 +268,10 @@ export function createPreviewCoreApi(ctx) {
       onUnauthorized?.();
       return null;
     }
+    if (response.status === 409) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(String(payload?.error || "Selected device is locked. Unlock and retry."));
+    }
     if (response.status === 204) {
       throw new Error("Server returned no content (204) for this file preview request.");
     }
@@ -351,6 +355,10 @@ export function createPreviewCoreApi(ctx) {
     if (response.status === 401) {
       onUnauthorized?.();
       return null;
+    }
+    if (response.status === 409) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(String(payload?.error || "Selected device is locked. Unlock and retry."));
     }
     if (response.status === 204) {
       throw new Error("Server returned no content (204) for this file preview request.");
