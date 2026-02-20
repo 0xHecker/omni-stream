@@ -1,226 +1,218 @@
-# Distributed LAN File Access (Coordinator + Agent)
+# Stream Local Files on Same Network
 
-This repo contains three production services:
+Stream Local is a LAN file-sharing package that combines:
 
-- `coordinator/`: control plane (identity, pairing, ACL, transfer orchestration, events).
-- `agent/`: data plane on each sharing device (read/search/stream/download + inbox transfers).
-- `stream_server/`: web UI and local file browsing service.
+- A web file explorer (`stream_server`, Flask)
+- A coordinator control plane (`coordinator`, FastAPI)
+- A device agent data plane (`agent`, FastAPI)
 
-Quick architecture doc: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+The packaged binary can run all services together, so each machine becomes a self-contained LAN hub.
 
-## One-Click Binaries (No Python Required)
+Quick architecture reference: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
-For non-coders, use the prebuilt binary for your OS:
+## Core Capabilities
+
+- Local setup flow for each machine (`/setup`) to define:
+  - shared folder
+  - local PIN (4-12 digits)
+- Local login flow (`/login`) for browser access control
+- Auto-discovery of hubs on the same LAN
+- Multi-device explorer UI:
+  - first view shows discovered LAN devices as folder-like entries
+  - each remote device unlocks with its own PIN
+  - unlock state is remembered per device in the current browser session
+  - if a remote PIN changes, only that device is relocked
+- Browse, search, preview, stream, and download across local and remote hubs
+- Transfer orchestration with coordinator + agent (request/approve/upload/finalize)
+
+## Platform Artifacts
+
+Release artifacts are platform-specific:
 
 - Windows: `stream-local.exe`
 - macOS: `stream-local`
 - Linux: `stream-local`
 
-Important: there is no single universal binary for all OSes. Each OS needs its own native binary format.  
-This repo ships a self-contained binary per OS (no Python install required).
-AppImage is Linux-only, so the default release strategy is native binaries for all three desktop OSes.
+Each artifact is built for its target operating system and architecture.
 
-### First Run UX
+## How It Works on a LAN
 
-1. Launch the binary.
-2. Browser opens automatically.
-3. Complete `/setup` once:
-   - choose shared folder
-   - set 4-12 digit PIN
-4. Log in and use the app.
-5. On the main page, use **Open On Other Devices** to copy:
-   - Web App URL (`http://<LAN-IP>:5000/`)
-   - Coordinator Server Address (`http://<LAN-IP>:7000`)
-6. Network tab auto-discovers and auto-connects by default (manual fields are fallback only).
+### 1) Per-Machine Runtime
 
-Settings are saved locally to:
+```text
++-------------------------------------------------------------------+
+| Machine N                                                         |
+|                                                                   |
+|  stream-local (single launcher)                                   |
+|    |                                                              |
+|    +--> Web UI        :5000  (setup/login/explorer)              |
+|    +--> Coordinator   :7000  (discovery/authz/transfers/events)  |
+|    +--> Agent         :7001  (share access/upload inbox)         |
+|                                                                   |
+|  Shared Folder <---- configured in /setup for this machine        |
++-------------------------------------------------------------------+
+```
 
-- Windows: `%APPDATA%\\StreamLocalFiles\\settings.json`
+### 2) Multi-Machine Hub Merge
+
+```text
+                          Same LAN
+
+ +----------------+     +----------------+     +----------------+
+ | Host A         |     | Host B         |     | Host C         |
+ | Web:5000       |<--->| Web:5000       |<--->| Web:5000       |
+ | Coord:7000     |<--->| Coord:7000     |<--->| Coord:7000     |
+ | Agent:7001     |     | Agent:7001     |     | Agent:7001     |
+ +----------------+     +----------------+     +----------------+
+         ^
+         |
+   Browser on Host A
+   "Devices" root shows: [Host A] [Host B] [Host C]
+```
+
+### 3) Open Remote Device (Per-Device PIN)
+
+```text
+User selects "Host B" in Devices root
+  -> local web calls POST /api/hubs/select (Host B)
+  -> if locked: UI opens PIN modal
+  -> local web calls POST /api/hubs/unlock {hub_id, pin}
+  -> local web validates by logging into Host B and probing /list
+  -> Host B marked unlocked for this browser session
+  -> existing explorer calls (/list, /search, /stream, ...) proxy to Host B
+```
+
+### 4) PIN Rotation Handling
+
+```text
+If Host B PIN changes:
+  remote call returns auth failure
+    -> local hub session for Host B is invalidated
+    -> Host B is relocked
+    -> browser returns to Devices/root context
+Other unlocked hubs remain unlocked.
+```
+
+## Quick Start (Packaged Binary)
+
+1. Download the binary for your OS.
+2. Run it.
+3. Open `http://<your-lan-ip>:5000/` (auto-open is enabled by default).
+4. Complete `/setup` on that machine:
+   - choose the shared folder
+   - set the local PIN
+5. Log in and use the explorer.
+
+The **Open On Other Devices** panel provides copy-ready LAN URLs.
+
+### Local Settings and Logs
+
+Settings file:
+
+- Windows: `%APPDATA%\StreamLocalFiles\settings.json`
 - macOS: `~/Library/Application Support/StreamLocalFiles/settings.json`
 - Linux: `${XDG_CONFIG_HOME:-~/.config}/StreamLocalFiles/settings.json`
 
-If startup fails, the app now writes a crash log to:
+Startup error logs:
 
-- Windows: `%APPDATA%\\StreamLocalFiles\\logs\\startup-error-*.log`
+- Windows: `%APPDATA%\StreamLocalFiles\logs\startup-error-*.log`
 - macOS: `~/Library/Application Support/StreamLocalFiles/logs/startup-error-*.log`
 - Linux: `${XDG_CONFIG_HOME:-~/.config}/StreamLocalFiles/logs/startup-error-*.log`
 
-No manual environment variables are required for this flow.
+## Multi-Machine LAN Runbook
 
-## Services
+Use this when you want each machine to expose its own folder and PIN.
 
-- Coordinator: `python coordinator_app.py` (default `:7000`)
-- Agent: `python agent_app.py` (default `:7001`)
-- Web UI: `python app.py --service web` (default `:5000`)
-- Unified launcher: `python app.py --service all` (starts coordinator + agent + web in dedicated processes)
-- Packaged binary default mode: `all` (starts coordinator + agent + web automatically)
+1. Install and run the app on each machine (A/B/C).
+2. Keep default ports unless you have a routing constraint:
+   - Web `5000`
+   - Coordinator `7000`
+   - Agent `7001`
+3. On each machine, complete `/setup` with that machine's folder and PIN.
+4. From any machine's browser, open the app and go to **Devices**.
+5. Select a device:
+   - unlocked device opens immediately
+   - locked device prompts for that device's PIN
+6. Use **Back to Devices** to switch between machines.
+
+### Network Requirements
+
+- Machines must be on the same reachable LAN segment.
+- Host firewall rules must allow inbound traffic to `5000`, `7000`, and `7001`.
+- For auto-discovery, use the same web port across machines (default `5000`).
+- If you run non-standard ports, provide explicit hints with `STREAM_HUB_HINTS`.
+
+## Security Model
+
+- Setup actions are local-only:
+  - changing folder/PIN is allowed only on the local coordinator
+  - remote coordinator settings are not exposed for mutation in UI
+- Remote unlock state is scoped per browser session and per device.
+- Device relock is isolated:
+  - remote auth failure invalidates only that device session
+  - other device sessions remain active
+- Coordinator/agent paths enforce ACL and signed ticket checks for remote operations.
+
+## Run from Source
+
+### Prerequisites
+
+- Python 3.11+
+- `uv` (recommended)
+
+### Setup
+
+1. Bootstrap environment:
+   - Windows: `powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1`
+   - macOS/Linux: `bash scripts/bootstrap.sh`
+2. Sync dependencies (if needed): `uv sync --frozen`
+
+### Start Services
+
+- Web only: `python app.py --service web`
+- Coordinator only: `python app.py --service coordinator`
+- Agent only: `python app.py --service agent`
+- All services (recommended for local hub): `python app.py --service all`
+
+Defaults:
+
+- Source mode defaults to `web`
+- Packaged binary defaults to `all`
 
 ## Build Binaries
 
-Local build (current OS only):
+Local build for current OS:
 
 1. `uv sync --frozen`
 2. `uv run python scripts/build_binary.py`
-3. Output: `dist/stream-local` (or `dist/stream-local.exe` on Windows)
+3. Output in `dist/` (`stream-local` or `stream-local.exe`)
 
-CI multi-OS build:
+CI build/publish pipelines are defined in:
 
-- GitHub Actions workflow: `.github/workflows/build-binaries.yml`
-- Runs on every commit push (all branches/tags) and on manual dispatch.
-- Builds and packages native binaries for Windows, macOS, and Linux.
-- Uses pinned tool versions and lockfile sync for reproducible builds.
-- Smoke-tests the built binary before packaging.
-- On every push, publishes binaries to rolling `edge` release assets.
-- On `v*` tags, publishes immutable versioned release assets.
-- On every push, publishes a GHCR package so binaries are visible under the repo `Packages` tab.
-- Uses shell-only steps (no external marketplace `uses:` actions), which fits orgs that only allow owner-scoped actions.
-
-GitHub Packages target:
-
-- `ghcr.io/<owner>/<repo>-binaries:edge` (latest commit on branch pushes)
-- `ghcr.io/<owner>/<repo>-binaries:sha-<commit12>` (immutable commit build)
-- `ghcr.io/<owner>/<repo>-binaries:<tag>` and `:latest` on version tags
-
-## SemVer Automation
-
-Semantic versioning is controlled by `pyproject.toml` `version`.
-
-- Manual local bump:
-  - `python scripts/bump_semver.py --bump patch`
-  - `python scripts/bump_semver.py --bump minor`
-  - `python scripts/bump_semver.py --bump major`
-  - `python scripts/bump_semver.py --bump prerelease --prerelease-label rc`
-
-- GitHub automated bump + tag:
-  - Workflow: `.github/workflows/semver-tag.yml`
-  - Runs automatically on every push to `master` (`patch` bump).
-  - Can also be run manually from Actions tab with custom bump type.
-  - It updates `pyproject.toml`, commits, creates `vX.Y.Z` tag, and pushes.
-  - Tag push triggers `.github/workflows/build-binaries.yml` to build packages and publish release assets.
-
-## Core Features Implemented
-
-- Multi-device principal pairing and device-bound credentials.
-- Share-level ACL checks (`read`, `download`, `request_send`, `accept_incoming`, `manage_share`).
-- Visible/hidden device mode.
-- Federated file search across accessible shares.
-- Transfer lifecycle:
-  - request -> receiver approve/reject
-  - receiver sets 4-digit passcode
-  - sender opens passcode window
-  - resumable chunk upload to receiver inbox
-  - commit (size verify + SHA-256 verify when provided)
-  - finalize to selected folder
-- Pausable transfer streams:
-  - `POST /agent/v1/inbox/transfers/{transfer_id}/pause`
-  - `POST /agent/v1/inbox/transfers/{transfer_id}/resume`
-  - `GET /agent/v1/inbox/transfers/{transfer_id}/status`
-
-## Quick Start
-
-1. Bootstrap environment (installs Python + uv + dependencies if missing):
-   - Windows (PowerShell): `powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1`
-   - macOS/Linux: `bash scripts/bootstrap.sh`
-   - If system Python is missing, bootstrap installs a uv-managed Python 3.11 runtime (sandboxed) and uses that.
-   - Note: auto-install may require admin/sudo privileges and internet access.
-   - Bootstrap sync uses `uv sync --frozen` for reproducible installs.
-2. Copy env defaults:
-   - `copy .env.example .env` (Windows)
-   - `cp .env.example .env` (macOS/Linux)
-3. Replace placeholder secrets/PINs in `.env` before starting services.
-   - For local-only smoke tests, you can temporarily set `ALLOW_INSECURE_DEFAULTS=1`.
-4. Start coordinator:
-   - `python coordinator_app.py`
-5. Bootstrap first principal:
-   - `POST /api/v1/pairing/start`
-   - First call auto-creates principal + first client device.
-6. Set agent env:
-   - `AGENT_OWNER_PRINCIPAL_ID` to the bootstrap principal.
-   - `AGENT_PUBLIC_BASE_URL` reachable by other LAN clients.
-   - `AGENT_DEFAULT_SHARE_ROOT` to local shared folder.
-7. Start agent:
-   - `python agent_app.py`
-   - Agent auto-registers and sends heartbeats to coordinator.
-
-## Runtime Performance Controls
-
-- Coordinator process model:
-  - `COORDINATOR_WORKERS` (uvicorn worker processes)
-  - `COORDINATOR_SYNC_THREAD_TOKENS` (thread slots for sync I/O handlers)
-  - `COORDINATOR_SEARCH_WORKERS` (shared federated-search executor threads)
-- Agent process model:
-  - `AGENT_WORKERS`
-  - `AGENT_SYNC_THREAD_TOKENS`
-- Web process model:
-  - `WEB_THREADS` (Waitress worker threads)
-  - `WEB_CONNECTION_LIMIT`
-- Thumbnail controls:
-  - `STREAM_ENABLE_VIDEO_THUMBNAILS=1|0`
-  - `STREAM_THUMBNAIL_CACHE_DIR` (optional temp cache path)
-  - `STREAM_THUMBNAIL_CACHE_TTL_SECONDS`
-  - `STREAM_THUMBNAIL_CACHE_MAX_MB`
-  - `STREAM_THUMBNAIL_MAX_CONCURRENT`
-  - `STREAM_THUMBNAIL_ACQUIRE_TIMEOUT_MS`
-  - `STREAM_FFMPEG_BIN` (optional explicit ffmpeg path)
-
-Defaults are tuned for low memory + high read throughput and can be raised per host.
-`imageio-ffmpeg` is bundled as a fallback ffmpeg runtime when system ffmpeg is not present.
-
-## Coordinator API (high-level)
-
-- Pairing:
-  - `POST /api/v1/pairing/start`
-  - `POST /api/v1/pairing/confirm`
-- Auth:
-  - `POST /api/v1/auth/token`
-  - `GET /api/v1/auth/me`
-- Catalog:
-  - `GET /api/v1/catalog/devices`
-  - `GET /api/v1/catalog/shares`
-- Files:
-  - `GET /api/v1/files/list`
-  - `GET /api/v1/files/search`
-- Transfers:
-  - `POST /api/v1/transfers`
-  - `GET /api/v1/transfers/{id}`
-  - `POST /api/v1/transfers/{id}/approve`
-  - `POST /api/v1/transfers/{id}/reject`
-  - `POST /api/v1/transfers/{id}/passcode/open`
-- Events:
-  - `GET /api/v1/events/token`
-  - `GET /api/v1/events/ws` (WebSocket)
-
-## Pause/Resume Upload Flow
-
-After `POST /api/v1/transfers/{id}/passcode/open`, use returned:
-- `upload_base_url`
-- `upload_ticket`
-
-For each file item:
-1. Stream chunks to:
-   - `POST {upload_base_url}/chunk?share_id=...&item_id=...&filename=...&size=...&sha256=...&ticket=...`
-   - Set headers:
-     - `x-chunk-offset: <current_offset>`
-     - `x-chunk-last: 1` on final chunk
-2. Pause anytime:
-   - `POST {upload_base_url}/pause?share_id=...&ticket=...`
-3. Resume:
-   - `POST {upload_base_url}/resume?share_id=...&ticket=...`
-4. Read offsets:
-   - `GET {upload_base_url}/status?share_id=...&ticket=...`
-5. Commit:
-   - `POST {upload_base_url}/commit?share_id=...&item_id=...&ticket=...`
-6. Finalize into destination:
-   - `POST {upload_base_url}/finalize?share_id=...&ticket=...`
-
-## Notes
-
-- Tickets are short-lived and signed by coordinator secret.
-- WebSocket auth uses short-lived event tokens (bearer-authenticated token endpoint + subprotocol transport).
-- Passcode windows are Argon2-hashed with lockout on repeated failures.
-- Device visibility hide mode removes devices from discovery for non-owners.
+- `.github/workflows/build-binaries.yml`
+- `.github/workflows/semver-tag.yml`
 
 ## Test
 
-- Run backend smoke tests:
-  - `python -m pytest -q`
+- `python -m pytest -q`
+
+## High-Level API Surface
+
+Explorer and hub endpoints (web):
+
+- `GET /api/hub/meta`
+- `GET /api/hubs`
+- `GET /api/discovery/coordinators`
+- `POST /api/hubs/select`
+- `POST /api/hubs/unlock`
+- `POST /api/hubs/lock`
+- `GET /list`
+- `GET /search`
+- `GET /stream`
+- `GET /stream_transcode`
+- `GET /download`
+- `GET /thumbnail`
+- `GET /video_info`
+- `GET /get_adjacent_file`
+
+Coordinator and agent APIs are documented in code and `docs/ARCHITECTURE.md`.
