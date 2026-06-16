@@ -25,15 +25,64 @@ Quick architecture reference: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - Browse, search, preview, stream, and download across local and remote hubs
 - Transfer orchestration with coordinator + agent (request/approve/upload/finalize)
 
-## Platform Artifacts
+## Install
 
-Release artifacts are platform-specific:
+macOS/Linux:
 
-- Windows: `stream-local.exe`
-- macOS: `stream-local`
-- Linux: `stream-local`
+```bash
+curl -fsSL https://raw.githubusercontent.com/0xHecker/omni-stream/master/scripts/bootstrap.sh | bash
+```
 
-Each artifact is built for its target operating system and architecture.
+Windows PowerShell:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/0xHecker/omni-stream/master/scripts/bootstrap.ps1 | iex"
+```
+
+The installer pulls the public repo source, installs Python dependencies with `uv`, writes a local `.env`, installs the `omni-stream` command, adds it to PATH for new terminals, and starts the hub.
+
+Default install locations:
+
+- macOS/Linux app: `~/.local/share/omni-stream`
+- macOS/Linux CLI: `~/.local/bin/omni-stream`
+- Windows app: `%LOCALAPPDATA%\OmniStream`
+- Windows CLI: `%LOCALAPPDATA%\Programs\OmniStream\bin\omni-stream.cmd`
+
+### Custom Ports
+
+macOS/Linux one-liner:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/0xHecker/omni-stream/master/scripts/bootstrap.sh | bash -s -- --web-port 5050 --coordinator-port 7050 --agent-port 7051
+```
+
+Windows one-liner:
+
+```powershell
+$env:WEB_PORT=5050; $env:COORDINATOR_PORT=7050; $env:AGENT_PORT=7051; irm https://raw.githubusercontent.com/0xHecker/omni-stream/master/scripts/bootstrap.ps1 | iex
+```
+
+After install, ports can be changed with:
+
+```bash
+omni-stream ports --web 5050 --coordinator 7050 --agent 7051
+```
+
+Restart `omni-stream` after changing persisted ports.
+
+## CLI
+
+```bash
+omni-stream                 # start all services
+omni-stream start           # start all services in the foreground
+omni-stream web             # run only the web UI
+omni-stream coordinator     # run only the coordinator
+omni-stream agent           # run only the agent
+omni-stream ports           # show configured ports
+omni-stream open            # open the local web UI
+omni-stream doctor          # check install, dependencies, and ports
+omni-stream where           # show install/config paths
+```
 
 ## How It Works on a LAN
 
@@ -93,10 +142,10 @@ If Host B PIN changes:
 Other unlocked hubs remain unlocked.
 ```
 
-## Quick Start (Packaged Binary)
+## Quick Start
 
-1. Download the binary for your OS.
-2. Run it.
+1. Run the installer for your OS.
+2. Start the hub with `omni-stream` if it is not already running.
 3. Open `http://<your-lan-ip>:5000/` (auto-open is enabled by default).
 4. Complete `/setup` on that machine:
    - choose the shared folder
@@ -139,8 +188,8 @@ Use this when you want each machine to expose its own folder and PIN.
 
 - Machines must be on the same reachable LAN segment.
 - Host firewall rules must allow inbound traffic to `5000`, `7000`, and `7001`.
-- For auto-discovery, use the same web port across machines (default `5000`).
-- If you run non-standard ports, provide explicit hints with `STREAM_HUB_HINTS`.
+- For auto-discovery, use the same web/coordinator ports across machines.
+- If machines use different ports, provide explicit web hints with `STREAM_HUB_HINTS` and coordinator hints with `STREAM_COORDINATOR_HINTS`.
 
 ## Security Model
 
@@ -169,10 +218,10 @@ Use this when you want each machine to expose its own folder and PIN.
 
 ### Start Services
 
-- Web only: `python app.py --service web`
-- Coordinator only: `python app.py --service coordinator`
-- Agent only: `python app.py --service agent`
-- All services (recommended for local hub): `python app.py --service all`
+- All services: `uv run python omni_stream_cli.py start`
+- Web only: `uv run python omni_stream_cli.py web`
+- Coordinator only: `uv run python omni_stream_cli.py coordinator`
+- Agent only: `uv run python omni_stream_cli.py agent`
 
 Defaults:
 
@@ -180,6 +229,12 @@ Defaults:
 - Packaged binary defaults to `all`
 
 ## Build Binaries
+
+The installer is the preferred path. Binary artifacts are optional release outputs and are platform-specific:
+
+- Windows: `stream-local.exe`
+- macOS: `stream-local`
+- Linux: `stream-local`
 
 Local build for current OS:
 

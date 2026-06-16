@@ -61,6 +61,54 @@ def test_discover_coordinators_probes_seed_then_scan(monkeypatch) -> None:
     assert calls[1] == ["http://192.168.1.50:7000/"]
 
 
+def test_probe_coordinator_urls_cancels_leftover_futures(monkeypatch) -> None:
+    created_futures = []
+    shutdown_calls = []
+
+    class FakeFuture:
+        def __init__(self, value: str | None) -> None:
+            self.value = value
+            self.cancelled = False
+            self._done = False
+
+        def result(self):
+            self._done = True
+            return self.value
+
+        def done(self) -> bool:
+            return self._done
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    class FakeExecutor:
+        def __init__(self, max_workers: int) -> None:
+            self.max_workers = max_workers
+
+        def submit(self, _fn, url, _timeout_seconds):
+            value = url.rstrip("/") if "hit" in url else None
+            future = FakeFuture(value)
+            created_futures.append(future)
+            return future
+
+        def shutdown(self, *, wait: bool = True, cancel_futures: bool = False) -> None:
+            shutdown_calls.append((wait, cancel_futures))
+
+    monkeypatch.setattr(networking, "ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(networking, "as_completed", lambda futures: iter(list(futures)))
+
+    result = networking._probe_coordinator_urls(
+        ["http://hit:7000/", "http://slow:7000/"],
+        timeout_seconds=0.1,
+        max_workers=8,
+        max_results=1,
+    )
+
+    assert result == ["http://hit:7000"]
+    assert created_futures[1].cancelled
+    assert shutdown_calls == [(False, True)]
+
+
 def test_coordinator_discovery_hosts_respects_include_exclude_cidrs(monkeypatch) -> None:
     monkeypatch.setattr(networking, "local_ipv4_addresses", lambda **kwargs: ["192.168.1.40", "10.0.0.8"])
     monkeypatch.setenv("STREAM_DISCOVERY_INCLUDE_CIDRS", "192.168.1.0/24")

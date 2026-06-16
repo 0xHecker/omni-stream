@@ -36,6 +36,13 @@ def close_http_client() -> None:
 atexit.register(close_http_client)
 
 
+def _request_timeout(timeout_seconds: float | None) -> float | httpx.Timeout:
+    if timeout_seconds is None:
+        return HTTP_TIMEOUT_SECONDS
+    safe_timeout = max(0.05, float(timeout_seconds))
+    return httpx.Timeout(safe_timeout, connect=min(2.0, safe_timeout))
+
+
 def _raise_agent_error(base_url: str, response: httpx.Response) -> None:
     detail = f"Agent {base_url} request failed ({response.status_code})"
     try:
@@ -66,6 +73,7 @@ def search_share(
     ticket: str,
     *,
     max_results: int = 300,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     response = _get_http_client().get(
         f"{base_url.rstrip('/')}/agent/v1/shares/{share_id}/search",
@@ -76,6 +84,7 @@ def search_share(
             "max_results": str(max_results),
             "ticket": ticket,
         },
+        timeout=_request_timeout(timeout_seconds),
     )
     if response.status_code != 200:
         _raise_agent_error(base_url, response)

@@ -9,7 +9,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse
 from uuid import uuid4
 
 import httpx
-from flask import Response, abort, current_app, session
+from flask import Response, abort, current_app, session, stream_with_context
 
 from shared.networking import discover_coordinators, local_ipv4_addresses, preferred_lan_ipv4
 from shared.runtime import env_int
@@ -20,10 +20,12 @@ HUB_SESSION_BROWSER_ID_KEY = "hub_browser_id"
 HUB_SESSION_ACTIVE_ID_KEY = "hub_active_id"
 HUB_SESSION_UNLOCKED_IDS_KEY = "hub_unlocked_ids"
 HUB_DISCOVERY_CACHE_TTL_SECONDS = 8.0
+HUB_CLIENT_IDLE_TTL_SECONDS = 30 * 60
+HUB_CLIENT_MAX_ENTRIES = 128
 LOCAL_HUB_ID = "local"
 
 _hub_clients_lock = threading.Lock()
-_hub_clients: dict[tuple[str, str], httpx.Client] = {}
+_hub_clients: dict[tuple[str, str], tuple[httpx.Client, float]] = {}
 _hub_discovery_cache_lock = threading.Lock()
 _hub_discovery_cache: tuple[float, list[dict[str, Any]]] | None = None
 
@@ -129,18 +131,53 @@ def _set_active_hub_id(hub_id: str) -> None:
     session[HUB_SESSION_ACTIVE_ID_KEY] = normalized
 
 
+def _close_client_quietly(client: httpx.Client) -> None:
+    try:
+        client.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _cleanup_hub_clients_locked(now: float) -> list[httpx.Client]:
+    ttl_seconds = env_int(
+        "STREAM_HUB_CLIENT_IDLE_TTL_SECONDS",
+        HUB_CLIENT_IDLE_TTL_SECONDS,
+        minimum=60,
+        maximum=24 * 60 * 60,
+    )
+    max_entries = env_int(
+        "STREAM_HUB_CLIENT_MAX_ENTRIES",
+        HUB_CLIENT_MAX_ENTRIES,
+        minimum=8,
+        maximum=4096,
+    )
+
+    clients_to_close: list[httpx.Client] = []
+    for key, (client, last_used) in list(_hub_clients.items()):
+        if now - last_used > ttl_seconds:
+            _hub_clients.pop(key, None)
+            clients_to_close.append(client)
+
+    if len(_hub_clients) > max_entries:
+        ordered = sorted(_hub_clients.items(), key=lambda row: row[1][1])
+        for key, (client, _last_used) in ordered[: len(_hub_clients) - max_entries]:
+            _hub_clients.pop(key, None)
+            clients_to_close.append(client)
+
+    return clients_to_close
+
+
 def _close_hub_client(browser_id: str, hub_id: str) -> None:
     key = (str(browser_id or "").strip(), str(hub_id or "").strip().lower())
     if not key[0] or not key[1]:
         return
     client: httpx.Client | None = None
     with _hub_clients_lock:
-        client = _hub_clients.pop(key, None)
+        record = _hub_clients.pop(key, None)
+        if record is not None:
+            client = record[0]
     if client is not None:
-        try:
-            client.close()
-        except Exception:  # noqa: BLE001
-            pass
+        _close_client_quietly(client)
 
 
 def clear_browser_hub_clients() -> None:
@@ -148,17 +185,17 @@ def clear_browser_hub_clients() -> None:
     if not browser_id:
         return
     keys_to_remove: list[tuple[str, str]] = []
+    clients_to_close: list[httpx.Client] = []
     with _hub_clients_lock:
         for key in list(_hub_clients):
             if key[0] == browser_id:
                 keys_to_remove.append(key)
         for key in keys_to_remove:
-            client = _hub_clients.pop(key, None)
-            if client is not None:
-                try:
-                    client.close()
-                except Exception:  # noqa: BLE001
-                    pass
+            record = _hub_clients.pop(key, None)
+            if record is not None:
+                clients_to_close.append(record[0])
+    for client in clients_to_close:
+        _close_client_quietly(client)
 
 
 def mark_hub_locked(hub_id: str) -> None:
@@ -188,24 +225,33 @@ def _get_or_create_hub_client(browser_id: str, hub_id: str, web_url: str) -> htt
     normalized_url = str(web_url or "").strip().rstrip("/")
     if not key[0] or not key[1] or not normalized_url:
         raise ValueError("Hub client key/url is invalid")
+    now = time.monotonic()
+    clients_to_close: list[httpx.Client] = []
+    selected: httpx.Client | None = None
     with _hub_clients_lock:
-        existing = _hub_clients.get(key)
-        if existing is not None:
+        clients_to_close.extend(_cleanup_hub_clients_locked(now))
+        existing_record = _hub_clients.get(key)
+        if existing_record is not None:
+            existing = existing_record[0]
             if str(existing.base_url).rstrip("/") == normalized_url:
-                return existing
-            try:
-                existing.close()
-            except Exception:  # noqa: BLE001
-                pass
-            _hub_clients.pop(key, None)
-        created = httpx.Client(
-            base_url=normalized_url,
-            timeout=httpx.Timeout(15.0, connect=2.5),
-            follow_redirects=False,
-            headers={"User-Agent": "stream-local-hub-proxy"},
-        )
-        _hub_clients[key] = created
-        return created
+                _hub_clients[key] = (existing, now)
+                selected = existing
+            else:
+                clients_to_close.append(existing)
+                _hub_clients.pop(key, None)
+        if selected is None:
+            selected = httpx.Client(
+                base_url=normalized_url,
+                timeout=httpx.Timeout(15.0, connect=2.5),
+                follow_redirects=False,
+                headers={"User-Agent": "stream-local-hub-proxy"},
+            )
+            _hub_clients[key] = (selected, now)
+
+    for client in clients_to_close:
+        _close_client_quietly(client)
+
+    return selected
 
 
 def _local_hub_payload() -> dict[str, Any]:
@@ -537,15 +583,21 @@ def proxy_remote_binary(
     outbound_headers = {"Accept": "*/*"}
     outbound_headers.update(_forward_range_header(request_headers))
     try:
-        response = client.get(endpoint, params=params, headers=outbound_headers)
+        request = client.build_request("GET", endpoint, params=params, headers=outbound_headers)
+        response = client.send(request, stream=True)
     except httpx.HTTPError:
         abort(502, description="Remote device is unreachable")
 
     if _is_remote_auth_failure(response):
+        response.close()
         mark_hub_locked(hub_id)
         abort(409, description="PIN expired for selected device. Unlock again.")
     if not response.is_success:
-        _abort_remote_error(response, "Remote device request failed")
+        try:
+            response.read()
+            _abort_remote_error(response, "Remote device request failed")
+        finally:
+            response.close()
 
     passthrough_headers: dict[str, str] = {}
     for header_name in (
@@ -561,7 +613,21 @@ def proxy_remote_binary(
         if value:
             passthrough_headers[header_name] = value
     content_type = response.headers.get("content-type", "application/octet-stream")
-    return Response(response.content, status=response.status_code, headers=passthrough_headers, content_type=content_type)
+
+    def generate_chunks():
+        try:
+            for chunk in response.iter_bytes():
+                if chunk:
+                    yield chunk
+        finally:
+            response.close()
+
+    return Response(
+        stream_with_context(generate_chunks()),
+        status=response.status_code,
+        headers=passthrough_headers,
+        content_type=content_type,
+    )
 
 
 def request_query_params(query_string: bytes) -> dict[str, str]:

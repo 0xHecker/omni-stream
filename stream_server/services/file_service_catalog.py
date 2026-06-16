@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import math
 import os
 from functools import lru_cache
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -209,34 +210,24 @@ def _iter_ranked_entries(root_dir: Path, directory: Path):
             yield sort_key, item
 
 
-def _compute_directory_listing(root_dir: Path, directory: Path, limit: int, page: int) -> tuple[str, str | None, tuple[dict[str, Any], ...], int, int]:
+def _compute_directory_entries(root_dir: Path, directory: Path) -> tuple[str, str | None, tuple[dict[str, Any], ...]]:
     ranked_items = sorted(_iter_ranked_entries(root_dir, directory), key=lambda row: row[0])
-    total_items = len(ranked_items)
-    import math
-    total_pages = max(1, math.ceil(total_items / limit))
-    current_page = max(1, min(page, total_pages))
-    start_idx = (current_page - 1) * limit
-    end_idx = start_idx + limit
-
-    sliced = ranked_items[start_idx:end_idx]
     current_path = to_client_path(directory, root_dir)
     parent_path = None if directory == root_dir else to_client_path(directory.parent, root_dir)
-    items = tuple(item for _, item in sliced)
-    return current_path, parent_path, items, total_pages, current_page
+    items = tuple(item for _, item in ranked_items)
+    return current_path, parent_path, items
 
 
 @lru_cache(maxsize=64)
-def _cached_directory_listing(
+def _cached_directory_entries(
     root_dir_str: str,
     directory_str: str,
     directory_mtime_ns: int,
-    limit: int,
-    page: int,
-) -> tuple[str, str | None, tuple[dict[str, Any], ...], int, int]:
+) -> tuple[str, str | None, tuple[dict[str, Any], ...]]:
     del directory_mtime_ns
     root_dir = Path(root_dir_str)
     directory = Path(directory_str)
-    return _compute_directory_listing(root_dir, directory, limit, page)
+    return _compute_directory_entries(root_dir, directory)
 
 
 def list_directory(root_dir: Path, directory: Path, *, max_entries: int = LIST_DEFAULT_MAX_ENTRIES, page: int = 1) -> dict[str, Any]:
@@ -244,14 +235,17 @@ def list_directory(root_dir: Path, directory: Path, *, max_entries: int = LIST_D
     root_resolved = root_dir.resolve()
     directory_resolved = directory.resolve()
     directory_mtime_ns = directory_resolved.stat().st_mtime_ns
-    current_path, parent_path, cached_items, total_pages, current_page = _cached_directory_listing(
+    current_path, parent_path, cached_items = _cached_directory_entries(
         str(root_resolved),
         str(directory_resolved),
         directory_mtime_ns,
-        limit,
-        page,
     )
-    items = [dict(item) for item in cached_items]
+    total_items = len(cached_items)
+    total_pages = max(1, math.ceil(total_items / limit))
+    current_page = max(1, min(page, total_pages))
+    start_idx = (current_page - 1) * limit
+    end_idx = start_idx + limit
+    items = [dict(item) for item in cached_items[start_idx:end_idx]]
     return {
         "current_path": current_path,
         "parent_path": parent_path,
@@ -395,5 +389,4 @@ def guess_mimetype(path: Path, file_type: str | None = None) -> str:
         return guessed
 
     return "application/octet-stream"
-
 

@@ -3,6 +3,10 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
+from flask import Flask
+
+from stream_server.services import file_service_catalog
+from stream_server.services import hub_proxy
 from stream_server.services.file_service import (
     generate_cached_thumbnail_bytes,
     generate_file_thumbnail_bytes,
@@ -28,6 +32,83 @@ def test_cached_thumbnail_for_text_file(tmp_path: Path, monkeypatch) -> None:
     assert first
     assert second
     assert first == second
+
+
+def test_directory_listing_reuses_cached_entries_across_pages(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path
+    for index in range(6):
+        (root / f"file-{index}.txt").write_text(str(index), encoding="utf-8")
+
+    file_service_catalog._cached_directory_entries.cache_clear()
+    original_iter = file_service_catalog._iter_ranked_entries
+    calls = 0
+
+    def counting_iter(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        yield from original_iter(*args, **kwargs)
+
+    monkeypatch.setattr(file_service_catalog, "_iter_ranked_entries", counting_iter)
+
+    first_page = file_service_catalog.list_directory(root, root, max_entries=2, page=1)
+    second_page = file_service_catalog.list_directory(root, root, max_entries=2, page=2)
+
+    assert [item["name"] for item in first_page["items"]] == ["file-0.txt", "file-1.txt"]
+    assert [item["name"] for item in second_page["items"]] == ["file-2.txt", "file-3.txt"]
+    assert calls == 1
+
+
+def test_remote_binary_proxy_streams_without_buffering(monkeypatch) -> None:
+    class FakeResponse:
+        status_code = 200
+        is_success = True
+        headers = {
+            "content-type": "application/octet-stream",
+            "content-length": "6",
+        }
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        @property
+        def content(self):  # pragma: no cover - this should never be touched.
+            raise AssertionError("proxy should stream bytes instead of buffering response.content")
+
+        def iter_bytes(self):
+            yield b"abc"
+            yield b"def"
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeClient:
+        def __init__(self, response: FakeResponse) -> None:
+            self.response = response
+
+        def build_request(self, *args, **kwargs):
+            return ("request", args, kwargs)
+
+        def send(self, _request, *, stream: bool = False):
+            assert stream is True
+            return self.response
+
+    fake_response = FakeResponse()
+    fake_client = FakeClient(fake_response)
+    monkeypatch.setattr(hub_proxy, "_browser_session_id", lambda: "browser-1")
+    monkeypatch.setattr(hub_proxy, "_get_or_create_hub_client", lambda *args, **kwargs: fake_client)
+
+    app = Flask(__name__)
+    app.secret_key = "test-secret"
+    with app.test_request_context("/stream"):
+        response = hub_proxy.proxy_remote_binary(
+            {"id": "hub-1", "web_url": "http://hub.local:5000"},
+            "/stream",
+            params={"path": "movie.mp4"},
+        )
+        payload = b"".join(response.response)
+
+    assert payload == b"abcdef"
+    assert fake_response.closed
 
 
 def test_video_thumbnail_can_be_disabled(tmp_path: Path, monkeypatch) -> None:

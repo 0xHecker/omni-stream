@@ -257,19 +257,28 @@ def _probe_coordinator_urls(
     seen_values = set(seen or set())
     workers = max(4, min(int(max_workers), max(8, len(urls))))
     discovered: list[str] = []
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(_coordinator_probe, url, timeout_seconds): url
-            for url in urls
-        }
+    executor = ThreadPoolExecutor(max_workers=workers)
+    futures = {
+        executor.submit(_coordinator_probe, url, timeout_seconds): url
+        for url in urls
+    }
+    try:
         for future in as_completed(futures):
-            value = future.result()
+            try:
+                value = future.result()
+            except Exception:  # noqa: BLE001
+                continue
             if not value or value in seen_values:
                 continue
             seen_values.add(value)
             discovered.append(value)
             if len(discovered) >= max_results:
                 break
+    finally:
+        for future in futures:
+            if not future.done():
+                future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
     return discovered
 
 

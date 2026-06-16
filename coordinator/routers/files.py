@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import atexit
 from concurrent.futures import TimeoutError, ThreadPoolExecutor, as_completed
 import threading
+import time
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -216,6 +217,7 @@ def search_files(
             recursive,
             ticket,
             max_results=min(max_results_per_share, max_results_total),
+            timeout_seconds=timeout_budget_ms / 1000,
         )
         items = payload.get("items", [])
         payload["items"] = _prepare_items_for_client(
@@ -272,8 +274,12 @@ def search_files(
     access_map: dict[str, dict] = {}
     errors: list[dict] = []
     truncated = False
+    search_deadline = time.monotonic() + (timeout_budget_ms / 1000)
 
     def _run_search(device: AgentDevice, share: Share, permissions: set[str]) -> dict:
+        remaining_timeout = search_deadline - time.monotonic()
+        if remaining_timeout <= 0:
+            raise TimeoutError("Search timeout exceeded")
         ticket = issue_read_ticket(config, auth.principal_id, share.id, permissions)
         payload = search_share(
             device.base_url,
@@ -283,6 +289,7 @@ def search_files(
             recursive,
             ticket,
             max_results=max_results_per_share,
+            timeout_seconds=remaining_timeout,
         )
         items = payload.get("items", [])
         prepared_items = []
@@ -320,7 +327,7 @@ def search_files(
             "errors": [],
         }
 
-    timeout_seconds = timeout_budget_ms / 1000
+    timeout_seconds = max(0.05, search_deadline - time.monotonic())
     future_map = {}
     try:
         for device, share, permissions in candidate_shares:
